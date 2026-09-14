@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "updatedAt": "2026-09-14T22:24:47.028Z",
+  "updatedAt": "2026-09-14T23:16:12.063Z",
   "dungeons": [
     {
       "id": "d-615azt6pu",
@@ -21,6 +21,16 @@
       "radius": 40,
       "questId": "q-6agbqn96b",
       "createdAt": "2026-09-14T22:24:47.027Z"
+    },
+    {
+      "id": "d-eq1f30dlo",
+      "name": "ゴブリンの巣穴",
+      "kind": "goblin",
+      "lat": 35.69101229157415,
+      "lng": 139.69803929328918,
+      "radius": 40,
+      "questId": "q-xbwpeddlo",
+      "createdAt": "2026-09-14T23:16:12.060Z"
     }
   ],
   "quests": [
@@ -43,6 +53,16 @@
       "radius": 30,
       "dungeonId": "d-6rr6dv96b",
       "createdAt": "2026-09-14T22:24:47.027Z"
+    },
+    {
+      "id": "q-xbwpeddlo",
+      "name": "酒場の主人",
+      "look": "keeper",
+      "lat": 35.69259816793544,
+      "lng": 139.69812512397766,
+      "radius": 30,
+      "dungeonId": "d-eq1f30dlo",
+      "createdAt": "2026-09-14T23:16:12.060Z"
     }
   ]
 }
