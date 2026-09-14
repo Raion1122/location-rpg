@@ -1,0 +1,19 @@
+# 中継サーバーが dungeons.json を書き換える途中の一時ファイル (server.js の saveDungeons が rename で消す)
+*.tmp
+
+# 依存パッケージ (今は無い。検証用に入れたときのため)
+node_modules/
+
+# Claude Code のこの PC だけの設定 (スキル本体 .claude/skills/ はコミットする)
+.claude/settings.local.json
+
+# OS junk
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.log

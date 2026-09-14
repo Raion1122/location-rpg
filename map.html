@@ -1,0 +1,1014 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>疑似GPS 地図ツール</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<!-- クエスト主の見た目の一覧・依頼の種類（ゲームと共通） -->
+<script src="dungeon.js"></script>
+<script src="quest.js"></script>
+<style>
+  :root {
+    --panel-bg: #1c2028;
+    --panel-fg: #e6e9ef;
+    --muted: #97a0b0;
+    --line: #313744;
+    --field: #12151b;
+    --accent: #4f8cff;
+    --target: #ff5a5a;
+    --ok: #6fd38f;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { display: flex; background: var(--panel-bg); font-family: system-ui, "Segoe UI", "Yu Gothic UI", Meiryo, sans-serif; }
+  #map { flex: 1; height: 100%; cursor: crosshair; }
+  #panel { width: 300px; height: 100%; overflow-y: auto; padding: 14px 16px; color: var(--panel-fg); font-size: 13px; }
+  @media (max-width: 700px) {
+    body { flex-direction: column; }
+    #map { flex: none; height: 60%; }
+    #panel { width: 100%; height: 40%; }
+  }
+  h1 { margin: 0 0 10px; font-size: 15px; }
+  section { padding: 10px 0; border-top: 1px solid var(--line); }
+  .label { margin-bottom: 4px; color: var(--muted); font-size: 12px; }
+  .mono { font-family: Consolas, "Courier New", monospace; font-size: 14px; }
+  .row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .gap { margin-top: 6px; }
+  button, .btn { padding: 5px 10px; border: 1px solid var(--line); border-radius: 6px; background: #2a303d; color: var(--panel-fg); font: inherit; text-decoration: none; cursor: pointer; }
+  button:hover, .btn:hover { border-color: var(--accent); }
+  .speeds label, .opt { display: flex; align-items: center; gap: 6px; padding: 3px 0; cursor: pointer; }
+  input[type="text"] { flex: 1; min-width: 0; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--field); color: var(--panel-fg); font-family: Consolas, "Courier New", monospace; }
+  .hint { color: var(--muted); line-height: 1.8; }
+  kbd { padding: 0 4px; border: 1px solid var(--line); border-radius: 4px; background: var(--field); font-family: Consolas, monospace; font-size: 11px; }
+  .status { color: var(--muted); }
+  .status.on { color: var(--ok); }
+  .error { min-height: 1em; margin-top: 4px; color: #ff7b7b; }
+  select, input[type="number"] { padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--field); color: var(--panel-fg); font: inherit; }
+  select { flex: 1; min-width: 0; }
+  input[type="number"] { width: 74px; font-family: Consolas, "Courier New", monospace; }
+  .mini { padding: 2px 7px; font-size: 12px; }
+  .dglist { margin: 8px 0 0; padding: 0; list-style: none; }
+  .dglist li { display: flex; align-items: center; gap: 6px; padding: 5px 0; border-top: 1px solid var(--line); }
+  .dgname { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .dgdist { color: var(--muted); font-family: Consolas, "Courier New", monospace; font-size: 12px; white-space: nowrap; }
+  .dgdist.inside { color: var(--ok); }
+  /* ダンジョンの入口の絵（sprites/dungeon の 384×384 を 64×64 で。ゲームの地図は 96×96） */
+  .dglabel { position: relative; width: 64px; height: 64px; background: no-repeat center / 64px 64px; filter: drop-shadow(0 2px 3px rgba(0, 0, 0, .6)); }
+  .placing #map { cursor: copy; }
+  .dglabel.quest::after { content: '📜'; position: absolute; top: 0; right: 2px; font-size: 14px; }
+  .grow { flex: 1; min-width: 0; }
+  /* クエスト主の絵（sprites/npc の歩きの絵の 1 コマ目） */
+  .npc { flex: none; width: 48px; height: 72px; background-repeat: no-repeat; background-size: 288px 72px; image-rendering: pixelated; }
+  .npc.mini { width: 24px; height: 36px; background-size: 144px 36px; image-rendering: auto; }
+  .qglist li { flex-wrap: wrap; }
+  .qgbtns { display: flex; gap: 6px; width: 100%; padding-left: 30px; }
+  /* 自分の絵（1 コマ 48×72 × 横 6 コマ。ダンジョンファイターズの戦士の歩きの絵から切り出して流用） */
+  .npc.hero { background-image: url('sprites/hero/warrior.png'); }
+  /* 今の位置のピン（ゲームの自分と同じ戦士の絵）。足元が位置に来る */
+  .pin { position: relative; width: 48px; height: 72px; cursor: grab; }
+  .pin::before { content: ''; position: absolute; left: 6px; right: 6px; bottom: -5px; height: 12px; border: 2px solid #fff; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px rgba(0, 0, 0, .35); }
+  .pin .npc { position: relative; }
+  .npc.hero.left { transform: scaleX(-1); }   /* 西へ歩くときは左を向く */
+  .target { width: 14px; height: 14px; border: 2px dashed var(--target); border-radius: 50%; background: rgba(255, 90, 90, .25); }
+  #phoneUrls { margin-bottom: 8px; }
+  #phoneUrls a { display: block; margin-bottom: 3px; color: var(--accent); font-family: Consolas, monospace; word-break: break-all; }
+  #qr { display: inline-block; padding: 6px; background: #fff; border-radius: 6px; line-height: 0; }
+  #qr:empty { display: none; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<aside id="panel">
+  <h1>📍 疑似GPS 地図ツール</h1>
+
+  <section>
+    <div class="label">いまの位置</div>
+    <div class="mono" id="coords">-</div>
+    <div class="row gap">
+      <button type="button" id="copyBtn">座標をコピー</button>
+      <span class="status" id="moving"></span>
+    </div>
+  </section>
+
+  <section>
+    <div class="label">移動の速さ</div>
+    <div class="speeds" id="speeds"></div>
+    <div class="row gap"><button type="button" id="stopBtn">止まる</button></div>
+  </section>
+
+  <section class="hint">
+    <div>地図をクリック … その地点へ移動</div>
+    <div>ピンをドラッグ … その場所へ置く</div>
+    <div><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> か <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> … 押している間だけ進む</div>
+  </section>
+
+  <section>
+    <div class="label">座標へ飛ぶ（例: 38.260, 140.882）</div>
+    <div class="row">
+      <input type="text" id="jumpInput" placeholder="緯度, 経度" autocomplete="off">
+      <button type="button" id="jumpBtn">飛ぶ</button>
+    </div>
+    <div class="error" id="jumpError"></div>
+  </section>
+
+  <section>
+    <label class="opt"><input type="checkbox" id="followChk"> ピンが端に寄ったら地図を動かす</label>
+    <label class="opt"><input type="checkbox" id="jitterChk"> GPSのブレを再現する（±<span id="accuracyText"></span> m）</label>
+  </section>
+
+  <section>
+    <div class="label">歩いた距離（ワープ・ドラッグ・座標へ飛ぶは数えない）</div>
+    <div class="row">
+      <span class="mono" id="distance">0 m</span>
+      <button type="button" id="resetBtn">リセット</button>
+    </div>
+  </section>
+
+  <section>
+    <div class="label">クエスト主を置く（目的地のダンジョンとセット）</div>
+    <div class="row"><input type="text" id="qName" placeholder="名前（空なら見た目の名前）" autocomplete="off"></div>
+    <div class="row gap">
+      <div class="npc" id="qLookPreview" title="クエスト主の見た目"></div>
+      <div class="grow">
+        <div class="label">見た目</div>
+        <div class="row"><select id="qLook"></select></div>
+        <div class="label gap">目的地の種類</div>
+        <div class="row"><select id="qKind"></select></div>
+      </div>
+    </div>
+    <div class="row gap">
+      <button type="button" id="questBtn">クエスト主を置く</button>
+      <span class="status" id="questHint"></span>
+    </div>
+    <div class="error" id="questError"></div>
+    <ol class="dglist qglist" id="questList"></ol>
+  </section>
+
+  <section>
+    <div class="label">ダンジョンを置く</div>
+    <div class="row"><input type="text" id="dgName" placeholder="名前（空なら種類の名前）" autocomplete="off"></div>
+    <div class="row gap">
+      <select id="dgKind"></select>
+      <input type="number" id="dgRadius" min="5" max="2000" step="5" value="40" title="展開する半径(m)">
+      <span class="status">m</span>
+    </div>
+    <div class="row gap">
+      <button type="button" id="placeBtn">地図に置く</button>
+      <span class="status" id="placeHint"></span>
+    </div>
+    <div class="error" id="dgError"></div>
+    <ol class="dglist" id="dgList"></ol>
+  </section>
+
+  <section>
+    <div class="label">つながっているゲーム</div>
+    <div class="status" id="peers">なし</div>
+    <div class="row gap"><a class="btn" href="demo-game.html?fakegps=1" target="_blank" rel="noopener">テスト用ゲームを開く</a></div>
+  </section>
+
+  <section id="phoneSection" hidden>
+    <div class="label">スマホで開く（この地図と同じ Wi-Fi につなぐ）</div>
+    <div id="phoneUrls"></div>
+    <div id="qr"></div>
+    <div class="hint gap">スマホのカメラで QR を読むか、上の URL を入力。<br>自作ゲームを試すときは <span class="mono">demo-game.html</span> を自分の HTML 名に置き換える。</div>
+  </section>
+</aside>
+
+<script>
+'use strict';
+
+// ---- 中継サーバー(server.js)の口。fake-gps.js と揃える ----
+const STREAM_URL = '/gps/stream?role=map';
+const PUBLISH_URL = '/gps/publish';
+const INFO_URL = '/gps/info';
+const LAST_KEY = 'fakeGps.last';          // 地図ツール自身の「前回の位置」復元用
+
+// ---- 地図ツールの設定 ----
+const SETTINGS_KEY = 'fakeGps.settings';
+const DEFAULT_POS = { lat: 35.681236, lng: 139.767125 };  // 東京駅
+const DEFAULT_ZOOM = 17;
+const ACCURACY_M = 10;              // ゲームへ伝える精度。ブレもこの半径に収める
+const TICK_MS = 100;
+const SEND_INTERVAL_MS = 200;       // 変化があるときにゲームへ送る最短間隔
+const MAX_DT_S = 10;                // スリープ明けなどで一気に進みすぎないよう上限を置く
+const JITTER_INTERVAL_MS = 1000;
+const JITTER_STEP_M = 6;
+const KEY_MPS_WHEN_WARP = 40 / 3.6; // ワープを選んでいるときにキーで進む速さ
+const TRAIL_MIN_STEP_M = 3;         // 軌跡の点はこれ以上離れたら足す
+const MAX_TRAIL_POINTS = 5000;
+const EARTH_RADIUS_M = 6371008.8;
+
+const SPEEDS = [
+  { id: 'warp', label: 'ワープ（瞬間移動）', mps: Infinity },
+  { id: 'walk', label: '歩き（時速4km）', mps: 4 / 3.6 },
+  { id: 'run', label: '走り（時速10km）', mps: 10 / 3.6 },
+  { id: 'bike', label: '自転車（時速15km）', mps: 15 / 3.6 },
+  { id: 'car', label: '車（時速40km）', mps: 40 / 3.6 },
+  { id: 'fast', label: '早送り（時速400km）', mps: 400 / 3.6 },
+];
+
+const KEY_DIRECTIONS = {
+  ArrowUp: 'n', KeyW: 'n',
+  ArrowDown: 's', KeyS: 's',
+  ArrowLeft: 'w', KeyA: 'w',
+  ArrowRight: 'e', KeyD: 'e',
+};
+
+// ---- ダンジョン ----
+const DUNGEONS_URL = '/gps/dungeons';
+const KINDS = [
+  { id: 'goblin', name: 'ゴブリンの巣穴', emoji: '👺' },
+  { id: 'bandit', name: '盗賊のアジト', emoji: '🗡️' },
+  { id: 'shrine', name: '苔むした祠', emoji: '⛩️' },
+  { id: 'orc', name: 'オークの野営地', emoji: '🪓' },
+  { id: 'tomb', name: '忘れられた墓所', emoji: '💀' },
+  { id: 'dragon', name: '竜の住処', emoji: '🐉' },
+];
+const kindOf = id => KINDS.find(k => k.id === id) || KINDS[0];
+const OLD_SERVER_TEXT = '中継サーバーが古いままです。動いている node server.js を止めて、起動し直してください';
+
+// ---- クエスト主（見た目の一覧・話しかけられる距離は quest.js と共通） ----
+const Quests = window.QuestRules;
+const Rules = window.DungeonRules;   // 依頼のグレード（目的地の危険度）を引くためだけに使う
+const QUEST_COLOR = '#c89bff';
+
+// ---- 保存 ----
+function loadJson(key) {
+  try {
+    return JSON.parse(localStorage.getItem(key) || 'null');
+  } catch (e) {
+    return null;
+  }
+}
+
+function saveJson(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (e) {
+    // 保存できなくても動作は続ける
+  }
+}
+
+// ---- 地球上の距離と方位 ----
+const toRad = deg => deg * Math.PI / 180;
+const toDeg = rad => rad * 180 / Math.PI;
+const normalizeLng = lng => ((lng + 540) % 360) - 180;
+
+function distanceM(a, b) {
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * EARTH_RADIUS_M * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+// 北 = 0、時計回り
+function bearingDeg(a, b) {
+  const dLng = toRad(b.lng - a.lng);
+  const y = Math.sin(dLng) * Math.cos(toRad(b.lat));
+  const x = Math.cos(toRad(a.lat)) * Math.sin(toRad(b.lat)) - Math.sin(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.cos(dLng);
+  return (toDeg(Math.atan2(y, x)) + 360) % 360;
+}
+
+function destination(from, bearing, meters) {
+  const d = meters / EARTH_RADIUS_M;
+  const b = toRad(bearing);
+  const lat1 = toRad(from.lat);
+  const lng1 = toRad(from.lng);
+  const lat2 = Math.asin(Math.sin(lat1) * Math.cos(d) + Math.cos(lat1) * Math.sin(d) * Math.cos(b));
+  const lng2 = lng1 + Math.atan2(Math.sin(b) * Math.sin(d) * Math.cos(lat1), Math.cos(d) - Math.sin(lat1) * Math.sin(lat2));
+  return { lat: toDeg(lat2), lng: normalizeLng(toDeg(lng2)) };
+}
+
+// ---- 状態 ----
+const saved = loadJson(LAST_KEY);
+const hasSaved = !!saved && Number.isFinite(saved.lat) && Number.isFinite(saved.lng);
+const settings = Object.assign({ speed: 'walk', follow: true, jitter: false }, loadJson(SETTINGS_KEY));
+if (!SPEEDS.some(s => s.id === settings.speed)) settings.speed = 'walk';
+
+const state = {
+  pos: hasSaved ? { lat: saved.lat, lng: saved.lng } : { ...DEFAULT_POS },
+  target: null,                 // 歩いて向かう先
+  keys: new Set(),              // 押している移動キー
+  heading: null,                // 進んでいる方位
+  speed: 0,                     // m/秒
+  distance: 0,                  // 歩いた距離
+  jitter: { north: 0, east: 0 },
+  dirty: true,                  // ゲームへまだ送っていない変化がある
+  lastSentAt: -Infinity,
+  lastJitterAt: -Infinity,
+  peers: 0,                     // つながっているゲームの数（中継サーバーが数える）
+  connected: false,             // 中継サーバーにつながっているか
+  dungeons: [],                 // 置いたダンジョン（依頼の目的地は questId 付き）
+  quests: [],                   // 置いたクエスト主
+};
+const trailSegments = [[state.pos]];   // ワープごとに線を切る
+let trailDirty = true;
+
+// ---- 地図 ----
+const map = L.map('map', { keyboard: false, doubleClickZoom: false }).setView([state.pos.lat, state.pos.lng], DEFAULT_ZOOM);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19,
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+}).addTo(map);
+
+const trailLine = L.polyline(trailSegments, { color: '#4f8cff', weight: 3, opacity: 0.55, interactive: false }).addTo(map);
+const targetLine = L.polyline([], { color: '#ff5a5a', weight: 2, dashArray: '6 6', interactive: false }).addTo(map);
+const targetMarker = L.marker([0, 0], {
+  icon: L.divIcon({ className: '', html: '<div class="target"></div>', iconSize: [14, 14], iconAnchor: [7, 7] }),
+  interactive: false,
+  keyboard: false,
+});
+const accuracyCircle = L.circle([state.pos.lat, state.pos.lng], {
+  radius: ACCURACY_M, color: '#4f8cff', weight: 1, fillOpacity: 0.12, interactive: false,
+}).addTo(map);
+const pin = L.marker([state.pos.lat, state.pos.lng], {
+  draggable: true,
+  keyboard: false,
+  zIndexOffset: 1000,
+  icon: L.divIcon({ className: '', html: '<div class="pin" title="ドラッグで移動"><div class="npc hero"></div></div>', iconSize: [48, 72], iconAnchor: [24, 70] }),
+}).addTo(map);
+
+const dungeonLayer = L.layerGroup().addTo(map);
+let placing = false;        // 「地図に置く」モード（ダンジョン）
+let questPlacing = null;    // 「クエスト主を置く」の途中 { giver: null（1 回目のクリック待ち）| { lat, lng } }
+let questPreview = null;    // 置いている途中のクエスト主の仮の印
+let dungeonRows = [];       // 一覧の行と距離表示の対応（ダンジョンとクエスト主）
+
+// ---- 移動 ----
+function currentSpeed() {
+  return SPEEDS.find(s => s.id === settings.speed) || SPEEDS[1];
+}
+
+function addTrailPoint(next, teleport) {
+  const last = trailSegments[trailSegments.length - 1];
+  if (teleport) {
+    if (last.length <= 1) last[0] = next;   // ドラッグ中は 1 点の線を置き換え続ける
+    else trailSegments.push([next]);
+  } else if (last.length >= 2 && distanceM(last[last.length - 2], next) < TRAIL_MIN_STEP_M) {
+    last[last.length - 1] = next;
+  } else {
+    last.push(next);
+  }
+  let total = trailSegments.reduce((n, seg) => n + seg.length, 0);
+  while (total > MAX_TRAIL_POINTS) {
+    const first = trailSegments[0];
+    if (first.length <= 1 && trailSegments.length > 1) trailSegments.shift();
+    else first.shift();
+    total -= 1;
+  }
+  trailDirty = true;
+}
+
+// ピンの戦士を進む向きに向ける（西へ歩くときは左）。ゲームと同じく、歩いたときだけ・真北/真南に近い動きでは変えない
+const FACE_TURN_MIN = 0.17;
+function faceTo(heading) {
+  const east = Math.sin(heading * Math.PI / 180);
+  if (Math.abs(east) < FACE_TURN_MIN) return;
+  const el = pin.getElement();
+  if (el) el.querySelector('.npc').classList.toggle('left', east < 0);
+}
+
+function setPosition(lat, lng, { teleport = false, fromDrag = false } = {}) {
+  const next = { lat: Math.max(-85, Math.min(85, lat)), lng: normalizeLng(lng) };
+  const moved = distanceM(state.pos, next);
+  if (moved > 0.01) {
+    state.heading = bearingDeg(state.pos, next);
+    if (!teleport && !fromDrag) faceTo(state.heading);
+  }
+  if (teleport) state.speed = 0;
+  else state.distance += moved;
+  addTrailPoint(next, teleport);
+  state.pos = next;
+  state.dirty = true;
+  if (fromDrag) return;
+  pin.setLatLng(next);
+  if (settings.follow && !map.getBounds().pad(-0.2).contains(next)) map.panTo(next, { animate: false });
+}
+
+function moveTo(lat, lng) {
+  const dest = { lat, lng: normalizeLng(lng) };
+  if (currentSpeed().mps === Infinity) {
+    state.target = null;
+    setPosition(dest.lat, dest.lng, { teleport: true });
+  } else {
+    state.target = dest;
+  }
+  render();
+}
+
+function bearingFromKeys() {
+  const dirs = new Set([...state.keys].map(code => KEY_DIRECTIONS[code]));
+  const north = (dirs.has('n') ? 1 : 0) - (dirs.has('s') ? 1 : 0);
+  const east = (dirs.has('e') ? 1 : 0) - (dirs.has('w') ? 1 : 0);
+  if (north === 0 && east === 0) return null;
+  return (toDeg(Math.atan2(east, north)) + 360) % 360;
+}
+
+// 動いたら true
+function stepMovement(dt) {
+  const speed = currentSpeed();
+  const keyBearing = bearingFromKeys();
+  if (keyBearing !== null) {
+    state.target = null;
+    const mps = Number.isFinite(speed.mps) ? speed.mps : KEY_MPS_WHEN_WARP;
+    const next = destination(state.pos, keyBearing, mps * dt);
+    setPosition(next.lat, next.lng);
+    state.speed = mps;
+    return true;
+  }
+  if (!state.target) return false;
+  if (!Number.isFinite(speed.mps)) {
+    // 歩いている途中でワープに切り替えた
+    setPosition(state.target.lat, state.target.lng, { teleport: true });
+    state.target = null;
+    return false;
+  }
+  const remain = distanceM(state.pos, state.target);
+  const step = speed.mps * dt;
+  if (step >= remain) {
+    setPosition(state.target.lat, state.target.lng);
+    state.target = null;
+  } else {
+    const next = destination(state.pos, bearingDeg(state.pos, state.target), step);
+    setPosition(next.lat, next.lng);
+  }
+  state.speed = speed.mps;
+  return true;
+}
+
+// ---- GPS のブレ ----
+function updateJitter(now) {
+  if (!settings.jitter) {
+    if (state.jitter.north !== 0 || state.jitter.east !== 0) {
+      state.jitter = { north: 0, east: 0 };
+      state.dirty = true;
+    }
+    return;
+  }
+  if (now - state.lastJitterAt < JITTER_INTERVAL_MS) return;
+  state.lastJitterAt = now;
+  // 少しずつずらし、精度の円からは出さない
+  let north = state.jitter.north + (Math.random() - 0.5) * JITTER_STEP_M;
+  let east = state.jitter.east + (Math.random() - 0.5) * JITTER_STEP_M;
+  const r = Math.hypot(north, east);
+  if (r > ACCURACY_M) {
+    north *= ACCURACY_M / r;
+    east *= ACCURACY_M / r;
+  }
+  state.jitter = { north, east };
+  state.dirty = true;
+}
+
+function reportedPosition() {
+  const { north, east } = state.jitter;
+  if (north === 0 && east === 0) return state.pos;
+  return {
+    lat: state.pos.lat + toDeg(north / EARTH_RADIUS_M),
+    lng: normalizeLng(state.pos.lng + toDeg(east / (EARTH_RADIUS_M * Math.cos(toRad(state.pos.lat))))),
+  };
+}
+
+// ---- ゲームとのやりとり（中継サーバー経由） ----
+function sendPosition(now) {
+  const p = reportedPosition();
+  const msg = {
+    type: 'position',
+    lat: p.lat,
+    lng: p.lng,
+    accuracy: ACCURACY_M,
+    heading: state.speed > 0 ? state.heading : null,
+    speed: state.speed,
+    ts: Date.now(),
+  };
+  fetch(PUBLISH_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(msg),
+    keepalive: true,
+  }).catch(() => {});
+  saveJson(LAST_KEY, msg);
+  state.lastSentAt = now;
+  state.dirty = false;
+}
+
+const es = new EventSource(STREAM_URL);
+es.addEventListener('open', () => { state.connected = true; });
+es.addEventListener('error', () => { state.connected = false; });   // EventSource が自動で再接続する
+es.addEventListener('peers', ev => {
+  let data;
+  try { data = JSON.parse(ev.data); } catch (e) { return; }
+  const prev = state.peers;
+  state.peers = data.games || 0;
+  if (state.peers > prev) state.dirty = true;   // 新しく来たゲームへ今の位置を送り直す
+});
+
+// ---- 画面 ----
+const el = id => document.getElementById(id);
+const ui = {
+  coords: el('coords'),
+  moving: el('moving'),
+  distance: el('distance'),
+  peers: el('peers'),
+  speeds: el('speeds'),
+  follow: el('followChk'),
+  jitter: el('jitterChk'),
+  jumpInput: el('jumpInput'),
+  jumpError: el('jumpError'),
+  copyBtn: el('copyBtn'),
+  dgName: el('dgName'),
+  dgKind: el('dgKind'),
+  dgRadius: el('dgRadius'),
+  dgList: el('dgList'),
+  dgError: el('dgError'),
+  placeBtn: el('placeBtn'),
+  placeHint: el('placeHint'),
+  qName: el('qName'),
+  qLook: el('qLook'),
+  qKind: el('qKind'),
+  qLookPreview: el('qLookPreview'),
+  questBtn: el('questBtn'),
+  questHint: el('questHint'),
+  questError: el('questError'),
+  questList: el('questList'),
+};
+
+function formatDistance(m) {
+  return m < 1000 ? `${Math.round(m)} m` : `${(m / 1000).toFixed(2)} km`;
+}
+
+function render() {
+  ui.coords.textContent = `${state.pos.lat.toFixed(6)}, ${state.pos.lng.toFixed(6)}`;
+  ui.distance.textContent = formatDistance(state.distance);
+  accuracyCircle.setLatLng(state.pos);
+  if (trailDirty) {
+    trailLine.setLatLngs(trailSegments);
+    trailDirty = false;
+  }
+  if (state.target) {
+    ui.moving.textContent = `目的地まで ${formatDistance(distanceM(state.pos, state.target))}`;
+    targetLine.setLatLngs([state.pos, state.target]);
+    targetMarker.setLatLng(state.target);
+    if (!map.hasLayer(targetMarker)) targetMarker.addTo(map);
+  } else {
+    ui.moving.textContent = state.speed > 0 ? 'キーで移動中' : '';
+    targetLine.setLatLngs([]);
+    if (map.hasLayer(targetMarker)) targetMarker.remove();
+  }
+  if (!state.connected) ui.peers.textContent = '中継サーバーに接続していない（server.js を起動して開き直す）';
+  else if (state.peers > 0) ui.peers.textContent = `${state.peers} つ`;
+  else ui.peers.textContent = 'なし（?fakegps=1 で開いたゲームが数えられる）';
+  ui.peers.classList.toggle('on', state.connected && state.peers > 0);
+  updateDungeonDistances();
+}
+
+function setSpeed(id) {
+  if (!SPEEDS.some(s => s.id === id)) return;
+  settings.speed = id;
+  saveJson(SETTINGS_KEY, settings);
+  const radio = ui.speeds.querySelector(`input[value="${id}"]`);
+  if (radio) radio.checked = true;
+}
+
+for (const s of SPEEDS) {
+  const label = document.createElement('label');
+  const input = document.createElement('input');
+  input.type = 'radio';
+  input.name = 'speed';
+  input.value = s.id;
+  input.checked = s.id === settings.speed;
+  input.addEventListener('change', () => setSpeed(s.id));
+  label.append(input, s.label);
+  ui.speeds.append(label);
+}
+
+ui.follow.checked = settings.follow;
+ui.jitter.checked = settings.jitter;
+el('accuracyText').textContent = ACCURACY_M;
+ui.follow.addEventListener('change', () => {
+  settings.follow = ui.follow.checked;
+  saveJson(SETTINGS_KEY, settings);
+});
+ui.jitter.addEventListener('change', () => {
+  settings.jitter = ui.jitter.checked;
+  saveJson(SETTINGS_KEY, settings);
+  state.lastJitterAt = -Infinity;
+});
+
+function flash(button, text) {
+  const original = button.dataset.label || button.textContent;
+  button.dataset.label = original;
+  button.textContent = text;
+  setTimeout(() => { button.textContent = original; }, 1200);
+}
+
+ui.copyBtn.addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(`${state.pos.lat.toFixed(6)}, ${state.pos.lng.toFixed(6)}`);
+    flash(ui.copyBtn, 'コピーしました');
+  } catch (e) {
+    flash(ui.copyBtn, 'コピーできません');
+  }
+});
+
+el('stopBtn').addEventListener('click', () => {
+  state.target = null;
+  state.keys.clear();
+});
+
+el('resetBtn').addEventListener('click', () => {
+  state.distance = 0;
+  trailSegments.length = 0;
+  trailSegments.push([state.pos]);
+  trailDirty = true;
+});
+
+// 「38.260, 140.882」「38.260 140.882」や Google マップの URL（…@38.26,140.88,17z）を読む
+function parseLatLng(text) {
+  const m = /(-?\d+(?:\.\d+)?)\s*[,\s]\s*(-?\d+(?:\.\d+)?)/.exec(text);
+  if (!m) return null;
+  const lat = Number(m[1]);
+  const lng = Number(m[2]);
+  if (Math.abs(lat) > 85 || Math.abs(lng) > 180) return null;
+  return { lat, lng };
+}
+
+function jump() {
+  const p = parseLatLng(ui.jumpInput.value);
+  if (!p) {
+    ui.jumpError.textContent = '「緯度, 経度」の形で入力してください';
+    return;
+  }
+  ui.jumpError.textContent = '';
+  state.target = null;
+  setPosition(p.lat, p.lng, { teleport: true });
+  map.setView([p.lat, p.lng], Math.max(map.getZoom(), 15), { animate: false });
+}
+
+el('jumpBtn').addEventListener('click', jump);
+ui.jumpInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') jump();
+});
+
+map.on('click', e => {
+  if (questPlacing) placeQuestStep(e.latlng.lat, e.latlng.lng);
+  else if (placing) placeDungeon(e.latlng.lat, e.latlng.lng);
+  else moveTo(e.latlng.lat, e.latlng.lng);
+});
+pin.on('dragstart', () => { state.target = null; });
+pin.on('drag', () => {
+  const ll = pin.getLatLng();
+  setPosition(ll.lat, ll.lng, { teleport: true, fromDrag: true });
+});
+
+document.addEventListener('keydown', e => {
+  if (!KEY_DIRECTIONS[e.code] || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.target instanceof Element && e.target.closest('input[type="text"], textarea')) return;
+  e.preventDefault();
+  state.keys.add(e.code);
+});
+document.addEventListener('keyup', e => { state.keys.delete(e.code); });
+window.addEventListener('blur', () => state.keys.clear());
+document.addEventListener('visibilitychange', () => state.keys.clear());
+
+// ---- ダンジョンの配置 ----
+// prefix: 'd' = ダンジョン / 'q' = クエスト主
+function newId(prefix) {
+  return prefix + '-' + Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-3);
+}
+
+async function loadDungeons() {
+  try {
+    const res = await fetch(DUNGEONS_URL, { cache: 'no-store' });
+    if (!res.ok) throw new Error(String(res.status));
+    const data = await res.json();
+    state.dungeons = Array.isArray(data.dungeons) ? data.dungeons : [];
+    state.quests = Array.isArray(data.quests) ? data.quests : [];
+    ui.dgError.textContent = '';
+    // quests が返ってこない = クエストに対応する前の古い server.js が動いたまま
+    ui.questError.textContent = Array.isArray(data.quests) ? '' : OLD_SERVER_TEXT;
+  } catch (e) {
+    ui.dgError.textContent = 'ダンジョンを読めません（中継サーバーが動いていない可能性）';
+    ui.questError.textContent = ui.dgError.textContent;
+  }
+  renderDungeons();
+}
+
+// ダンジョンとクエスト主はまとめて保存する（クエスト主と目的地が片方だけ残らないように）
+async function saveDungeons() {
+  let message = '';
+  try {
+    const res = await fetch(DUNGEONS_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dungeons: state.dungeons, quests: state.quests }),
+    });
+    const saved = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(saved.error || String(res.status));
+    if (!Array.isArray(saved.quests)) throw new Error(OLD_SERVER_TEXT);
+  } catch (e) {
+    message = '保存できませんでした（' + e.message + '）';
+  }
+  ui.dgError.textContent = message;
+  ui.questError.textContent = message;
+}
+
+function placeDungeon(lat, lng) {
+  const kind = kindOf(ui.dgKind.value);
+  const radius = Math.max(5, Math.min(2000, Number(ui.dgRadius.value) || 40));
+  const name = ui.dgName.value.trim().slice(0, 40) || kind.name;
+  state.dungeons.push({
+    id: newId('d'),
+    name,
+    kind: kind.id,
+    lat: Math.max(-85, Math.min(85, lat)),
+    lng: normalizeLng(lng),
+    radius,
+    createdAt: new Date().toISOString(),
+  });
+  ui.dgName.value = '';
+  renderDungeons();
+  saveDungeons();
+}
+
+function removeDungeon(id) {
+  state.dungeons = state.dungeons.filter(d => d.id !== id);
+  renderDungeons();
+  saveDungeons();
+}
+
+// 歩かずに現場へ行くための口（ダンジョンマスター用）。クエスト主の所へ行くのにも使う
+function goToDungeon(d) {
+  state.target = null;
+  setPosition(d.lat, d.lng, { teleport: true });
+  map.setView([d.lat, d.lng], Math.max(map.getZoom(), 17), { animate: false });
+}
+
+// ---- クエスト主の配置 ----
+// 「クエスト主を置く」を押す → 地図を 1 回クリック（クエスト主の場所）→ もう 1 回クリック（目的地のダンジョンの場所）
+function npcIcon(lookId, opacity = 1) {
+  return L.divIcon({
+    className: '',
+    html: `<div class="npc" style="background-image:url('${Quests.spriteUrl(lookId)}');opacity:${opacity}"></div>`,
+    iconSize: [48, 72],
+    iconAnchor: [24, 70],   // 足元が地点に来る
+  });
+}
+
+function setQuestPlacing(on) {
+  if (on && placing) setPlacing(false);   // 置く操作は 1 つずつ
+  questPlacing = on ? { giver: null } : null;
+  if (questPreview) {
+    questPreview.remove();
+    questPreview = null;
+  }
+  document.body.classList.toggle('placing', on);
+  ui.questBtn.textContent = on ? '置くのをやめる' : 'クエスト主を置く';
+  ui.questHint.textContent = on ? '① クエスト主の場所をクリック' : '';
+}
+
+function placeQuestStep(lat, lng) {
+  const at = { lat: Math.max(-85, Math.min(85, lat)), lng: normalizeLng(lng) };
+  if (!questPlacing.giver) {
+    questPlacing.giver = at;
+    questPreview = L.marker([at.lat, at.lng], { icon: npcIcon(ui.qLook.value, 0.6), interactive: false, keyboard: false }).addTo(map);
+    ui.questHint.textContent = '② 目的地（ダンジョン）の場所をクリック';
+    return;
+  }
+  const giver = questPlacing.giver;
+  setQuestPlacing(false);
+  placeQuest(giver, at);
+}
+
+// 目的地は questId 付きのダンジョンとして置く（ゲームでは受注するまで出ない）
+function placeQuest(giverAt, targetAt) {
+  const look = Quests.lookOf(ui.qLook.value);
+  const kind = kindOf(ui.qKind.value);
+  const questId = newId('q');
+  const dungeonId = newId('d');
+  const createdAt = new Date().toISOString();
+  state.dungeons.push({
+    id: dungeonId,
+    name: kind.name,
+    kind: kind.id,
+    lat: targetAt.lat,
+    lng: targetAt.lng,
+    radius: Quests.TARGET_RADIUS_M,
+    questId,
+    createdAt,
+  });
+  state.quests.push({
+    id: questId,
+    name: ui.qName.value.trim().slice(0, 40) || look.name,
+    look: look.id,
+    lat: giverAt.lat,
+    lng: giverAt.lng,
+    radius: Quests.TALK_RADIUS_M,
+    dungeonId,
+    createdAt,
+  });
+  ui.qName.value = '';
+  renderDungeons();
+  saveDungeons();
+}
+
+// クエスト主を消すと、目的地のダンジョンも一緒に消える
+function removeQuest(id) {
+  state.quests = state.quests.filter(q => q.id !== id);
+  state.dungeons = state.dungeons.filter(d => d.questId !== id);
+  renderDungeons();
+  saveDungeons();
+}
+
+function miniButton(text, onClick) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'mini';
+  btn.textContent = text;
+  btn.addEventListener('click', onClick);
+  return btn;
+}
+
+function renderDungeons() {
+  dungeonLayer.clearLayers();
+  for (const d of state.dungeons) {
+    L.circle([d.lat, d.lng], { radius: d.radius, color: '#ffb454', weight: 1, fillOpacity: 0.14, interactive: false }).addTo(dungeonLayer);
+    L.marker([d.lat, d.lng], {
+      // 接地線（384 の 365 行目）の中央が地点に来る
+      icon: L.divIcon({ className: '', html: `<div class="dglabel${d.questId ? ' quest' : ''}" style="background-image:url('sprites/dungeon/${kindOf(d.kind).id}.png')"></div>`, iconSize: [64, 64], iconAnchor: [32, 61] }),
+      interactive: false,
+      keyboard: false,
+    }).addTo(dungeonLayer);
+  }
+  // クエスト主と、目的地までの点線（地図ツールには受注前でも全部見える）
+  for (const q of state.quests) {
+    const target = state.dungeons.find(d => d.id === q.dungeonId);
+    if (target) {
+      L.polyline([[q.lat, q.lng], [target.lat, target.lng]], { color: QUEST_COLOR, weight: 2, dashArray: '5 7', opacity: 0.9, interactive: false }).addTo(dungeonLayer);
+    }
+    L.circle([q.lat, q.lng], { radius: q.radius, color: QUEST_COLOR, weight: 1, fillOpacity: 0.12, interactive: false }).addTo(dungeonLayer);
+    L.marker([q.lat, q.lng], { icon: npcIcon(q.look), interactive: false, keyboard: false }).addTo(dungeonLayer);
+  }
+
+  dungeonRows = [];
+  renderQuestList();
+  const plain = state.dungeons.filter(d => !d.questId);   // 依頼の目的地はクエスト主の一覧に出す
+  if (plain.length === 0) {
+    const empty = document.createElement('li');
+    empty.className = 'hint';
+    empty.textContent = '「地図に置く」を押してから地図をクリック';
+    ui.dgList.replaceChildren(empty);
+  } else {
+    // 並べ替えは置いた時だけ（動くたびに入れ替わると押しにくい）
+    const sorted = plain.sort((a, b) => distanceM(state.pos, a) - distanceM(state.pos, b));
+    ui.dgList.replaceChildren(...sorted.map(d => {
+      const row = document.createElement('li');
+      const name = document.createElement('span');
+      name.className = 'dgname';
+      name.textContent = `${kindOf(d.kind).emoji} ${d.name}`;
+      name.title = `${d.name}（半径 ${d.radius}m）`;
+      const dist = document.createElement('span');
+      dist.className = 'dgdist';
+      row.append(name, dist, miniButton('飛ぶ', () => goToDungeon(d)), miniButton('削除', () => removeDungeon(d.id)));
+      dungeonRows.push({ d, dist });
+      return row;
+    }));
+  }
+  updateDungeonDistances();
+}
+
+function renderQuestList() {
+  if (state.quests.length === 0) {
+    const empty = document.createElement('li');
+    empty.className = 'hint';
+    empty.textContent = '「クエスト主を置く」を押し、地図を 2 回クリック（クエスト主 → 目的地）';
+    ui.questList.replaceChildren(empty);
+    return;
+  }
+  const sorted = [...state.quests].sort((a, b) => distanceM(state.pos, a) - distanceM(state.pos, b));
+  ui.questList.replaceChildren(...sorted.map(q => {
+    const target = state.dungeons.find(d => d.id === q.dungeonId);
+    const row = document.createElement('li');
+    const face = document.createElement('div');
+    face.className = 'npc mini';
+    face.style.backgroundImage = `url('${Quests.spriteUrl(q.look)}')`;
+    const name = document.createElement('span');
+    name.className = 'dgname';
+    const label = Quests.giverLabel(q, target ? Rules.dangerOf(target.kind) : null);
+    name.textContent = `${label} → ${target ? `${kindOf(target.kind).emoji} ${target.name}` : '（目的地なし）'}`;
+    name.title = `${q.name}（話しかけられる距離 ${q.radius}m）`;
+    const dist = document.createElement('span');
+    dist.className = 'dgdist';
+    const buttons = document.createElement('div');
+    buttons.className = 'qgbtns';
+    buttons.append(miniButton('主へ飛ぶ', () => goToDungeon(q)));
+    if (target) buttons.append(miniButton('目的地へ飛ぶ', () => goToDungeon(target)));
+    buttons.append(miniButton('削除', () => removeQuest(q.id)));
+    row.append(face, name, dist, buttons);
+    dungeonRows.push({ d: q, dist });   // 距離はクエスト主まで（話しかけられる距離に入ると緑）
+    return row;
+  }));
+}
+
+function updateDungeonDistances() {
+  for (const row of dungeonRows) {
+    const m = distanceM(state.pos, row.d);
+    row.dist.textContent = formatDistance(m);
+    row.dist.classList.toggle('inside', m <= row.d.radius);
+  }
+}
+
+function setPlacing(on) {
+  if (on && questPlacing) setQuestPlacing(false);   // 置く操作は 1 つずつ
+  placing = on;
+  document.body.classList.toggle('placing', on);
+  ui.placeBtn.textContent = on ? '配置をやめる' : '地図に置く';
+  ui.placeHint.textContent = on ? '地図をクリックして設置' : '';
+}
+
+function addOption(select, value, text) {
+  const option = document.createElement('option');
+  option.value = value;
+  option.textContent = text;
+  select.append(option);
+}
+
+for (const k of KINDS) {
+  addOption(ui.dgKind, k.id, `${k.emoji} ${k.name}`);
+  addOption(ui.qKind, k.id, `${k.emoji} ${k.name}`);
+}
+for (const look of Quests.LOOKS) addOption(ui.qLook, look.id, look.name);
+
+function updateLookPreview() {
+  ui.qLookPreview.style.backgroundImage = `url('${Quests.spriteUrl(ui.qLook.value)}')`;
+}
+ui.qLook.addEventListener('change', updateLookPreview);
+updateLookPreview();
+
+ui.placeBtn.addEventListener('click', () => setPlacing(!placing));
+ui.questBtn.addEventListener('click', () => setQuestPlacing(!questPlacing));
+loadDungeons();
+
+// ---- スマホで開く（中継サーバーが動いていれば LAN の URL と QR を出す） ----
+async function showPhoneSection() {
+  let info;
+  try {
+    const res = await fetch(INFO_URL);
+    if (!res.ok) return;
+    info = await res.json();
+  } catch (e) {
+    return;   // 中継サーバー無し（python 配信など）。この節は出さない
+  }
+  if (!info.ips || info.ips.length === 0) return;
+  const urls = info.ips.map(ip => `http://${ip}:${info.port}${info.demoPath}`);
+  const list = el('phoneUrls');
+  list.replaceChildren(...urls.map(u => {
+    const a = document.createElement('a');
+    a.href = u;
+    a.textContent = u;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    return a;
+  }));
+  if (typeof QRCode !== 'undefined') {
+    try {
+      new QRCode(el('qr'), { text: urls[0], width: 148, height: 148, correctLevel: QRCode.CorrectLevel.M });
+    } catch (e) {
+      // QR ライブラリを読めなくても URL は出す
+    }
+  }
+  el('phoneSection').hidden = false;
+}
+showPhoneSection();
+
+// ---- ループ ----
+let lastTickAt = performance.now();
+function tick() {
+  const now = performance.now();
+  const dt = Math.min((now - lastTickAt) / 1000, MAX_DT_S);
+  lastTickAt = now;
+
+  const moving = stepMovement(dt);
+  if (!moving && state.speed !== 0) {
+    state.speed = 0;
+    state.dirty = true;
+  }
+  updateJitter(now);
+  if (state.dirty && now - state.lastSentAt >= SEND_INTERVAL_MS) sendPosition(now);
+  render();
+}
+
+// 検証スクリプト(tools/verify_map_tool.js)から触るための口
+window.fakeGpsTool = {
+  map, state, settings, setSpeed, moveTo, placeDungeon, removeDungeon, goToDungeon, setPlacing, loadDungeons,
+  placeQuest, removeQuest, setQuestPlacing,
+};
+
+render();
+setInterval(tick, TICK_MS);
+</script>
+</body>
+</html>

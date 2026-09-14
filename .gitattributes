@@ -1,0 +1,12 @@
+# 位置RPG — 行末の宣言
+#
+# 2026-09-15 実測: テキスト 14 本 (js / html / json / md / vbs) は全部 LF (CRLF 0 本)。
+# server.js も dungeons.json を JSON.stringify(...) で LF のまま書き出す。
+# この PC は core.autocrlf=true (全体設定) なので、宣言が無いと取り出すたびに CRLF へ化ける。
+# ⇒ 既定は LF (道具が実際に書き出している姿を宣言する。ダンジョンファイターズの既定と同じ)
+* text=auto eol=lf
+
+# --- バイナリ (行末を変換しない) ---
+*.png binary
+*.jpg binary
+*.mp3 binary

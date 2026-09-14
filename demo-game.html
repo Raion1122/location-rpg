@@ -1,0 +1,1016 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>テスト用ゲーム｜近くのダンジョン</title>
+<link rel="icon" href="data:,">
+<!-- 地図の部品（Leaflet）。読めなくてもゲームは下の一覧だけで遊べるように defer で読む -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<!-- 位置ゲー本体より先に読み込む。?fakegps=1 で開いたときだけ、現在地が地図ツールのピンになる -->
+<script src="fake-gps.js"></script>
+<!-- ダンジョンの中身（敵の顔ぶれ・サイコロ・戦いのルール）。画面には触らない -->
+<script src="dungeon.js"></script>
+<!-- クエスト（依頼）のルール：クエスト主の見た目・依頼の言葉と報酬・受注から報告までの進み方 -->
+<script src="quest.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; overflow: hidden; background: #15110d; color: #efe6d6; font-family: system-ui, "Segoe UI", "Yu Gothic UI", Meiryo, sans-serif; }
+  .sub { margin-top: 2px; color: #b9ab93; font-size: 12px; }
+  ol { margin: 0; padding-left: 1.4em; }
+  li { padding: 3px 0; }
+  li.near { color: #ffd479; font-weight: bold; }
+  li.empty { margin-left: -1.4em; color: #b9ab93; list-style: none; }
+  .stars { color: #b9ab93; font-size: 11px; font-weight: normal; letter-spacing: -1px; }
+  .dir { display: inline-block; width: 1.4em; text-align: center; }
+  button { width: 100%; padding: 12px; border: 0; border-radius: 10px; background: #c8582a; color: #fff; font: inherit; font-weight: bold; cursor: pointer; }
+  button:hover { background: #d96a3a; }
+  button.alt { background: #4f7a3e; }
+  button.alt:hover { background: #5e8c4b; }
+  button.talk { background: #8a6a2c; }
+  button.talk:hover { background: #9c7a36; }
+  button.quiet { background: #3a3025; }
+  button.quiet:hover { background: #4a3d2f; }
+  button:disabled, button:disabled:hover { background: #2a221a; color: #6d6356; cursor: default; }
+  [hidden] { display: none !important; }
+
+  /* ---- 地上：地図 ---- */
+  #gameMap { position: fixed; inset: 0; z-index: 0; background: #1b1510; }
+  /* 明るい OSM の地図を反転して暗くし、茶色を重ねてダンジョンの雰囲気に合わせる（印や円には効かない） */
+  #gameMap .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) saturate(.3) sepia(.7) brightness(.68) contrast(1.1); }
+  .leaflet-container { font: inherit; }
+  #noMap { position: fixed; top: 38%; left: 16px; right: 16px; z-index: 1; color: #7d7263; font-size: 13px; line-height: 1.7; text-align: center; }
+
+  .topbar { position: fixed; top: 0; left: 0; right: 0; z-index: 10; padding: calc(10px + env(safe-area-inset-top)) 16px 22px; background: linear-gradient(rgba(13, 10, 7, .92) 55%, rgba(13, 10, 7, 0)); pointer-events: none; }
+  .hero-line { display: flex; align-items: center; gap: 6px; font-size: 16px; font-weight: bold; }
+  .hero-line .npc { margin: -8px 0 -6px; }
+  /* fake-gps.js の札は左下だと一覧に重なるので、右上へ */
+  [data-fake-gps-badge] { top: calc(12px + env(safe-area-inset-top)) !important; right: 12px !important; bottom: auto !important; left: auto !important; }
+  .toast { position: fixed; top: calc(58px + env(safe-area-inset-top)); left: 50%; z-index: 12; max-width: calc(100% - 32px); overflow: hidden; padding: 8px 14px; transform: translateX(-50%); border: 1px solid #5a4a36; border-radius: 999px; background: rgba(33, 26, 19, .96); color: #ffd479; font-size: 13px; font-weight: bold; white-space: nowrap; text-overflow: ellipsis; box-shadow: 0 3px 12px rgba(0, 0, 0, .6); }
+
+  .sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; max-width: 560px; margin: 0 auto; padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); border: 1px solid #3a3025; border-bottom: 0; border-radius: 16px 16px 0 0; background: rgba(21, 17, 13, .94); }
+  .sheet .label { margin-bottom: 4px; color: #b9ab93; font-size: 12px; }
+  .sheet ol { font-size: 14px; }
+  .quest-line { margin-bottom: 10px; padding: 7px 10px; border: 1px solid #5a4a36; border-radius: 8px; background: #2a2016; color: #ffd479; font-size: 13px; line-height: 1.5; cursor: pointer; }
+  #talkBtn, #enterBtn { margin-top: 10px; }
+  #recenterBtn { position: absolute; top: -56px; right: 12px; width: 44px; height: 44px; padding: 0; border: 1px solid #3a3025; border-radius: 50%; background: rgba(21, 17, 13, .94); color: #ffd479; font-size: 22px; line-height: 1; }
+  .status { margin-top: 8px; color: #6d6356; font-size: 10px; line-height: 1.5; }
+  .status a { color: inherit; }
+
+  /* 地図の自分（.npc.hero の 1 コマ目）。足元が現在地に来る。金の輪でクエスト主と見分ける */
+  .me { position: relative; width: 48px; height: 72px; }
+  .me::before { content: ''; position: absolute; left: 6px; right: 6px; bottom: -5px; height: 12px; border: 2px solid #ffd479; border-radius: 50%; background: rgba(255, 212, 121, .22); box-shadow: 0 0 10px 3px rgba(255, 212, 121, .3); }
+  /* ダンジョンの入口（sprites/dungeon の 384×384 を 96×96 で）。接地線（384 の 365 行目）の中央が地点に来る。知らない種類は絵文字 */
+  .dg-pin { position: relative; display: grid; place-items: center; width: 96px; height: 96px; background: no-repeat center / 96px 96px; font-size: 40px; image-rendering: pixelated; filter: drop-shadow(0 3px 4px rgba(0, 0, 0, .75)); cursor: pointer; }
+  .dg-pin.near { animation: glow 1.2s ease-in-out infinite; }
+  .dg-pin.cleared::after { content: '✅'; position: absolute; right: 10px; bottom: 8px; font-size: 16px; }
+  .dg-pin.quest::before { content: '📜'; position: absolute; top: 4px; right: 8px; font-size: 18px; }
+  @keyframes glow { 50% { filter: drop-shadow(0 0 8px rgba(255, 212, 121, .95)) drop-shadow(0 3px 4px rgba(0, 0, 0, .75)); } }
+  /* クエスト主（sprites/npc の歩きの絵の 1 コマ目）。足元が地点に来る */
+  .qg-pin { position: relative; width: 48px; height: 72px; cursor: pointer; }
+  .qg-pin::before { content: ''; position: absolute; left: 10px; right: 10px; bottom: -4px; height: 10px; border-radius: 50%; background: rgba(0, 0, 0, .6); }
+  .qg-pin.near::before { background: rgba(255, 212, 121, .5); box-shadow: 0 0 12px 5px rgba(255, 212, 121, .35); }
+  .npc { position: relative; width: 48px; height: 72px; background-repeat: no-repeat; background-size: 288px 72px; image-rendering: pixelated; }
+  .npc.mini { width: 24px; height: 36px; background-size: 144px 36px; image-rendering: auto; }
+  /* 自分の絵（1 コマ 48×72 × 横 6 コマ。ダンジョンファイターズの戦士の歩きの絵から切り出して流用）。地図・上の行・戦闘の自分の欄で使う */
+  .npc.hero { background-image: url('sprites/hero/warrior.png'); }
+  .npc.hero.left { transform: scaleX(-1); }   /* 西へ進むときは左を向く */
+  .qg-mark { position: absolute; top: -20px; left: 50%; min-width: 22px; height: 22px; padding: 0 5px; transform: translateX(-50%); border: 2px solid #2b2118; border-radius: 11px; background: #ffd479; color: #2b2118; font-size: 14px; font-weight: bold; line-height: 18px; text-align: center; box-shadow: 0 2px 6px rgba(0, 0, 0, .6); animation: bob 1.4s ease-in-out infinite; }
+  .qg-mark.wait { border-color: #5a4a36; background: #3a3025; color: #b9ab93; animation: none; }
+  @keyframes bob { 50% { transform: translate(-50%, -4px); } }
+  .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: #211a13; color: #efe6d6; box-shadow: 0 3px 14px rgba(0, 0, 0, .6); }
+  .leaflet-popup-content { min-width: 180px; margin: 12px 14px; }
+  .leaflet-container a.leaflet-popup-close-button { color: #b9ab93; }
+  .dg-popup-title { font-size: 15px; font-weight: bold; }
+  .dg-popup button { margin-top: 10px; padding: 8px; }
+  .dg-popup .hint { margin-top: 8px; color: #ffd479; font-size: 12px; }
+
+  /* ---- クエスト主との会話 ---- */
+  #talkScreen { position: fixed; inset: 0; z-index: 15; display: flex; align-items: flex-end; justify-content: center; padding: 16px 16px calc(16px + env(safe-area-inset-bottom)); background: rgba(8, 6, 4, .6); }
+  .talk-box { width: 100%; max-width: 520px; padding: 12px 16px 16px; border: 1px solid #5a4a36; border-radius: 14px; background: #211a13; box-shadow: 0 8px 30px rgba(0, 0, 0, .7); }
+  .talk-head { display: flex; align-items: flex-end; gap: 12px; }
+  /* 絵を 2 倍にして、箱の上へはみ出させる */
+  .talk-sprite { flex: none; width: 96px; height: 144px; margin-top: -64px; background-repeat: no-repeat; background-size: 576px 144px; image-rendering: pixelated; filter: drop-shadow(0 4px 6px rgba(0, 0, 0, .7)); }
+  .talk-who { min-width: 0; padding-bottom: 10px; }
+  .talk-name { font-size: 17px; font-weight: bold; }
+  #talkText { margin: 10px 0 14px; color: #e6dac4; line-height: 1.85; white-space: pre-line; }
+  .talk-actions { display: flex; gap: 8px; }
+  .talk-actions button { flex: 1; }
+
+  /* ---- ダンジョンの中 ---- */
+  #dungeonScreen { position: fixed; inset: 0; z-index: 20; overflow-y: auto; padding: calc(24px + env(safe-area-inset-top)) 16px calc(24px + env(safe-area-inset-bottom)); background: #0d0a07; }
+  .dg { display: flex; flex-direction: column; gap: 12px; max-width: 520px; margin: 0 auto; }
+  .dg-head { text-align: center; }
+  #dgTitle { font-size: 24px; }
+  .dg-room { margin-top: 4px; color: #b9ab93; font-size: 13px; }
+  #dgBody { margin: 8px 0; color: #d9cbb4; line-height: 1.9; text-align: center; white-space: pre-line; }
+  .fight { display: flex; flex-direction: column; gap: 8px; }
+  .fighter { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid #3a3025; border-radius: 10px; background: #211a13; transition: opacity .3s; }
+  .fighter.down { opacity: .4; }
+  .f-emoji { width: 48px; font-size: 36px; text-align: center; }
+  .f-main { flex: 1; min-width: 0; }
+  .f-name { font-weight: bold; }
+  .bar { height: 8px; margin: 6px 0 4px; overflow: hidden; border-radius: 4px; background: #3a3025; }
+  .bar > div { width: 100%; height: 100%; background: #c8582a; transition: width .25s; }
+  .fighter.you .bar > div { background: #5a9e4b; }
+  .fighter.you .bar > div.low { background: #d9453a; }
+  .f-sub { color: #b9ab93; font-size: 12px; }
+  .actions { display: flex; gap: 8px; }
+  .actions button { flex: 1; }
+  .log { padding: 10px 14px; list-style: none; border-radius: 10px; background: #15110d; font-size: 13px; line-height: 1.6; }
+  .log li { padding: 2px 0; color: #8f8472; }
+  .log li:first-child { color: #efe6d6; }
+  #leaveBtn { align-self: center; max-width: 240px; background: #3a3025; }
+</style>
+</head>
+<body>
+<div id="gameMap"></div>
+<div id="noMap" hidden>地図を読み込めませんでした（ネットにつながっていない可能性）。<br>下の一覧だけで遊べます。</div>
+
+<header class="topbar">
+  <div class="hero-line"><div class="npc mini hero"></div><span id="heroLine"></span></div>
+  <div class="sub" id="heroSub"></div>
+</header>
+<div class="toast" id="toast" hidden></div>
+
+<section class="sheet">
+  <button type="button" id="recenterBtn" title="現在地に戻る" hidden>◎</button>
+  <div class="quest-line" id="questLine" title="地図で見る" hidden></div>
+  <div class="label">近くのダンジョン</div>
+  <ol id="dungeons"></ol>
+  <button type="button" id="talkBtn" class="talk" hidden></button>
+  <button type="button" id="enterBtn" hidden></button>
+  <div class="status">
+    <span id="status">位置を待っています…</span><br>
+    地図 &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors
+  </div>
+</section>
+
+<div id="talkScreen" hidden>
+  <div class="talk-box" role="dialog" aria-labelledby="talkName">
+    <div class="talk-head">
+      <div class="talk-sprite" id="talkSprite"></div>
+      <div class="talk-who">
+        <div class="talk-name" id="talkName"></div>
+        <div class="sub" id="talkSub"></div>
+      </div>
+    </div>
+    <p id="talkText"></p>
+    <div class="talk-actions" id="talkActions"></div>
+  </div>
+</div>
+
+<div id="dungeonScreen" hidden>
+  <div class="dg">
+    <header class="dg-head">
+      <div id="dgTitle"></div>
+      <div class="dg-room" id="dgRoom"></div>
+    </header>
+
+    <p id="dgBody"></p>
+
+    <section class="fight" id="fightView" hidden>
+      <div class="fighter" id="enemyCard">
+        <div class="f-emoji" id="enemyEmoji"></div>
+        <div class="f-main">
+          <div class="f-name" id="enemyName"></div>
+          <div class="bar"><div id="enemyBar"></div></div>
+          <div class="f-sub" id="enemySub"></div>
+        </div>
+      </div>
+      <div class="fighter you">
+        <div class="f-emoji"><div class="npc hero"></div></div>
+        <div class="f-main">
+          <div class="f-name" id="youName"></div>
+          <div class="bar"><div id="youBar"></div></div>
+          <div class="f-sub" id="youSub"></div>
+        </div>
+      </div>
+    </section>
+
+    <div class="actions">
+      <button type="button" id="advanceBtn" hidden></button>
+      <button type="button" id="attackBtn" hidden>⚔️ 攻撃</button>
+      <button type="button" id="potionBtn" class="alt" hidden></button>
+    </div>
+
+    <ol class="log" id="dgLog" hidden></ol>
+
+    <button type="button" id="leaveBtn">出る</button>
+  </div>
+</div>
+
+<script>
+'use strict';
+// 位置ゲーの動作確認用の画面。
+// 位置は標準の navigator.geolocation だけで取り、ダンジョンとクエスト主の配置は中継サーバーから読む。
+// fake-gps.js が位置を差し替えているかどうかを、このコードは知らなくてよい。
+// 地上は地図（Leaflet）に自分・ダンジョン・クエスト主を出す。地図が読めないときは下の一覧だけで遊べる。
+// ダンジョンの中の戦いは dungeon.js（DungeonRules）、依頼の進み方は quest.js（QuestRules）が決め、
+// ここは表示とボタンだけを受け持つ。
+
+const DUNGEONS_URL = '/gps/dungeons';
+const POLL_MS = 3000;          // 地図ツールで置いた内容を拾い直す間隔
+const SHOW_COUNT = 3;          // 下の一覧に出す数（近い順）
+const LOG_LINES = 8;
+const HERO_KEY = 'locgame.hero.v1';     // 冒険者の記録（この端末のブラウザにだけ保存する）
+const QUEST_KEY = 'locgame.quests.v1';  // 依頼の進み具合（これもこの端末のブラウザにだけ保存する）
+const MAP_ZOOM = 17;           // 最初に現在地を映すときの寄り具合（街区が見えるくらい）
+const FACE_TURN_MIN = 0.17;    // 進む向きの東西の成分がこれ未満（真北・真南から 10° 以内）なら、戦士の向きを変えない
+// 地図タイルは OpenStreetMap（API キー不要。CARTO は今はキーが無いと透かしが出る）。
+// OSM のタイルは開発・少人数向け。公開して多くの人が遊ぶなら、別のタイル配信に切り替える
+const TILE_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+const EARTH_RADIUS_M = 6371008.8;
+const ARROWS = ['↑', '↗', '→', '↘', '↓', '↙', '←', '↖'];
+const DIR_NAMES = ['北', '北東', '東', '南東', '南', '南西', '西', '北西'];
+const KIND_EMOJI = { goblin: '👺', bandit: '🗡️', shrine: '⛩️', orc: '🪓', tomb: '💀', dragon: '🐉' };
+const QUEST_MARKS = { new: '!', accepted: '…', cleared: '?', done: '' };   // クエスト主の頭の上の印
+const QUEST_STATE_TEXT = { new: '依頼あり', accepted: '受注中', cleared: '報告できる', done: '達成済み' };
+const TOAST_MS = 3500;
+const Rules = window.DungeonRules;
+const Quests = window.QuestRules;
+
+const $ = id => document.getElementById(id);
+const ui = {
+  heroLine: $('heroLine'),
+  heroSub: $('heroSub'),
+  noMap: $('noMap'),
+  toast: $('toast'),
+  questLine: $('questLine'),
+  list: $('dungeons'),
+  talkBtn: $('talkBtn'),
+  enterBtn: $('enterBtn'),
+  recenterBtn: $('recenterBtn'),
+  status: $('status'),
+  talkScreen: $('talkScreen'),
+  talkSprite: $('talkSprite'),
+  talkName: $('talkName'),
+  talkSub: $('talkSub'),
+  talkText: $('talkText'),
+  talkActions: $('talkActions'),
+  screen: $('dungeonScreen'),
+  dgTitle: $('dgTitle'),
+  dgRoom: $('dgRoom'),
+  dgBody: $('dgBody'),
+  fightView: $('fightView'),
+  enemyCard: $('enemyCard'),
+  enemyEmoji: $('enemyEmoji'),
+  enemyName: $('enemyName'),
+  enemyBar: $('enemyBar'),
+  enemySub: $('enemySub'),
+  youName: $('youName'),
+  youBar: $('youBar'),
+  youSub: $('youSub'),
+  advanceBtn: $('advanceBtn'),
+  attackBtn: $('attackBtn'),
+  potionBtn: $('potionBtn'),
+  log: $('dgLog'),
+  leaveBtn: $('leaveBtn'),
+};
+
+// 検証スクリプト(tools/verify_map_tool.js)が読む
+const demoState = window.demoGame = {
+  updates: 0, lat: null, lng: null, speed: null, error: null,
+  dungeons: 0, canEnter: null, inside: null, facing: 'right',
+  quests: 0, canTalk: null, talking: null, questState: {},
+  hero: null, battle: null, map: null,
+};
+
+let world = { dungeons: [], quests: [] };   // 中継サーバーから読んだ配置そのまま（受注前の目的地も入っている）
+let dungeons = [];       // そのうち、いま出すダンジョン
+let quests = [];         // クエスト主
+let here = null;         // { lat, lng, accuracy }
+let hero = loadHero();
+let progress = loadProgress();   // 依頼の進み具合 { クエストの id: 'accepted' | 'cleared' | 'done' }
+let run = null;          // ダンジョンの中にいる間だけ入る（DungeonRules.startRun の戻り値）
+let settled = false;     // この挑戦の結果を記録に足したか（二重に足さない）
+let resultText = '';
+let talking = null;      // 話しているクエスト主の id
+let talkNote = null;     // 会話窓に出す一言（報酬を受け取った直後など）。null ならいつもの言葉
+let toastTimer = null;
+let mapView = null;      // 地図が使えるときだけ入る
+
+const fake = window.fakeGps;
+const modeText = fake && fake.enabled
+  ? '📍 疑似GPS'
+  : `🛰️ 本物のGPS${fake && fake.reason ? `（${fake.reason}）` : ''}`;
+ui.status.textContent = `${modeText} ・ 位置を待っています…`;
+
+const toRad = deg => deg * Math.PI / 180;
+
+function distanceM(a, b) {
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * EARTH_RADIUS_M * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+function bearingDeg(a, b) {
+  const dLng = toRad(b.lng - a.lng);
+  const y = Math.sin(dLng) * Math.cos(toRad(b.lat));
+  const x = Math.cos(toRad(a.lat)) * Math.sin(toRad(b.lat)) - Math.sin(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.cos(dLng);
+  return ((Math.atan2(y, x) * 180 / Math.PI) + 360) % 360;
+}
+
+const emojiOf = kind => KIND_EMOJI[kind] || '🏰';
+const stars = n => '★'.repeat(n) + '☆'.repeat(5 - n);
+const octant = place => Math.round(bearingDeg(here, place) / 45) % 8;
+const arrowTo = place => ARROWS[octant(place)];
+const wayTo = place => `${DIR_NAMES[octant(place)]}へ ${Math.round(distanceM(here, place))} m`;   // 「北東へ 320 m」
+
+// ---- 冒険者の記録 ----
+function loadHero() {
+  try {
+    return Rules.normalizeHero(JSON.parse(localStorage.getItem(HERO_KEY)));
+  } catch (e) {
+    return Rules.newHero();   // 保存を読めない（プライベートブラウズ等）ときは新しい冒険者で遊ぶ
+  }
+}
+
+function saveHero() {
+  try {
+    localStorage.setItem(HERO_KEY, JSON.stringify(hero));
+  } catch (e) {
+    // 保存できなくても、この画面を開いている間は遊べる
+  }
+}
+
+function renderHero() {
+  const info = Rules.levelInfo(hero.xp);
+  const stats = Rules.heroStats(info.level);
+  ui.heroLine.textContent = `Lv ${info.level} ・ 💰 ${hero.gold} G`;
+  ui.heroSub.textContent = `経験値 ${info.need ? `${info.into} / ${info.need}` : '最大'} ・ HP ${stats.maxHp} ・ 攻撃 +${stats.atk} ・ 防御 ${stats.ac}`;
+  demoState.hero = { level: info.level, xp: hero.xp, gold: hero.gold, cleared: { ...hero.cleared } };
+}
+
+// ---- 依頼の進み具合 ----
+function loadProgress() {
+  try {
+    return Quests.normalizeProgress(JSON.parse(localStorage.getItem(QUEST_KEY)));
+  } catch (e) {
+    return {};
+  }
+}
+
+function saveProgress() {
+  try {
+    localStorage.setItem(QUEST_KEY, JSON.stringify(progress));
+  } catch (e) {
+    // 保存できなくても、この画面を開いている間は続けられる
+  }
+}
+
+// 配置か進み具合が変わったら、出すダンジョンを選び直す（依頼の目的地は、受けてから報告するまでだけ出る）
+function refreshVisible() {
+  dungeons = world.dungeons.filter(d => Quests.isDungeonVisible(d, progress));
+  quests = world.quests;
+  Object.assign(demoState, { dungeons: dungeons.length, quests: quests.length, questState: { ...progress } });
+}
+
+function setProgress(next) {
+  progress = next;
+  saveProgress();
+  refreshVisible();
+  render();
+}
+
+// ---- 地上：近くのダンジョンとクエスト主 ----
+async function loadDungeons() {
+  try {
+    const res = await fetch(DUNGEONS_URL, { cache: 'no-store' });
+    if (!res.ok) return;
+    const data = await res.json();
+    const next = {
+      dungeons: Array.isArray(data.dungeons) ? data.dungeons : [],
+      quests: Array.isArray(data.quests) ? data.quests : [],
+    };
+    if (JSON.stringify(next) === JSON.stringify(world)) return;   // 変化なしなら描き直さない
+    world = next;
+    refreshVisible();
+    render();
+    if (talking) renderTalk();   // 話している相手が地図ツールで消されたら閉じる
+  } catch (e) {
+    // サーバーが一時的に落ちても、いま出ている内容は保つ
+  }
+}
+
+function sortedByDistance() {
+  if (!here) return [];
+  return dungeons
+    .map(d => ({ ...d, dist: distanceM(here, d) }))
+    .sort((a, b) => a.dist - b.dist);
+}
+
+function questsByDistance() {
+  if (!here) return [];
+  return quests
+    .map(q => ({ ...q, dist: distanceM(here, q) }))
+    .sort((a, b) => a.dist - b.dist);
+}
+
+// 依頼の目的地（受注前で地図に出ていなくても引ける）
+const targetOf = q => world.dungeons.find(d => d.id === q.dungeonId) || null;
+
+// クエスト主の呼び名。依頼のグレード（目的地の危険度）を添える（例: 村の長老（LV1））
+function giverName(q) {
+  const target = targetOf(q);
+  return Quests.giverLabel(q, target ? Rules.dangerOf(target.kind) : null);
+}
+
+// ダンジョンに入れるのは、範囲の中にいて、まだ攻略していないときだけ（攻略したダンジョンには二度と入れない）
+const canEnterDungeon = d => d.dist != null && d.dist <= d.radius && !hero.cleared[d.id];
+
+// いま進めている依頼と、次に向かう場所（目的地か、報告するクエスト主）。置かれた順で最初の 1 つ
+function currentObjective() {
+  for (const q of quests) {
+    const st = Quests.stateOf(progress, q.id);
+    const target = targetOf(q);
+    if (st === 'accepted' && target) return { quest: q, target, place: target, label: `${emojiOf(target.kind)} ${target.name} を攻略する` };
+    if (st === 'cleared') return { quest: q, target, place: q, label: `${giverName(q)} に報告する` };
+  }
+  return null;
+}
+
+function note(text) {
+  const li = document.createElement('li');
+  li.className = 'empty';
+  li.textContent = text;
+  return li;
+}
+
+function render() {
+  const list = sortedByDistance();
+  const reachable = list.filter(canEnterDungeon);
+  demoState.canEnter = reachable.length > 0 ? reachable[0].id : null;
+  const givers = questsByDistance();
+  const talkable = givers.filter(q => q.dist <= q.radius);
+  demoState.canTalk = talkable.length > 0 ? talkable[0].id : null;
+
+  if (dungeons.length === 0) {
+    ui.list.replaceChildren(note(quests.length > 0
+      ? 'まだありません（クエスト主に話しかけると、目的地が現れます）'
+      : 'まだ置かれていません（PCの地図ツールで置いてください）'));
+  } else if (!here) {
+    ui.list.replaceChildren(note('位置が分かると距離を出します'));
+  } else {
+    ui.list.replaceChildren(...list.slice(0, SHOW_COUNT).map(d => {
+      const li = document.createElement('li');
+      const danger = document.createElement('span');
+      danger.className = 'stars';
+      danger.textContent = stars(Rules.dangerOf(d.kind));
+      const dir = document.createElement('span');
+      dir.className = 'dir';
+      dir.textContent = arrowTo(d);
+      li.append(`${d.questId ? '📜' : ''}${emojiOf(d.kind)} ${d.name} `, danger, ` — ${Math.round(d.dist)} m `, dir);
+      if (hero.cleared[d.id]) li.append(' ✅');
+      if (canEnterDungeon(d)) {
+        li.classList.add('near');
+        li.append(' 着いた！');
+      } else if (d.dist <= d.radius) {
+        li.append(' 攻略済みなので入れない');
+      }
+      return li;
+    }));
+  }
+
+  const goal = currentObjective();
+  ui.questLine.hidden = !goal;
+  if (goal) {
+    const title = Quests.requestFor(goal.target ? goal.target.kind : null).title;
+    const dist = here ? distanceM(here, goal.place) : null;
+    const where = dist === null ? '' : dist <= goal.place.radius ? ' — すぐそこ' : ` — ${Math.round(dist)} m ${arrowTo(goal.place)}`;
+    ui.questLine.textContent = `📜 ${title}：${goal.label}${where}`;
+  }
+
+  const busy = demoState.inside !== null || talking !== null;
+  const target = reachable[0];
+  ui.enterBtn.hidden = !target || busy;
+  if (target) ui.enterBtn.textContent = `⚔️ ${target.name} に入る`;
+  const giver = talkable[0];
+  ui.talkBtn.hidden = !giver || busy;
+  if (giver) ui.talkBtn.textContent = `💬 ${giverName(giver)} に話しかける`;
+
+  syncMarkers('pins', here ? list : dungeons);
+  syncMarkers('givers', here ? givers : quests);
+  syncGuide(goal);
+}
+
+// ---- 地上：地図 ----
+function initMap() {
+  if (!window.L) {
+    ui.noMap.hidden = false;
+    return;
+  }
+  const map = L.map('gameMap', { zoomControl: false, attributionControl: false, keyboard: false }).setView([36.2, 138.3], 5);
+  L.tileLayer(TILE_URL, { maxZoom: 19 }).addTo(map);
+  // 受けた依頼の次の行き先までの点線
+  const guide = L.polyline([], { color: '#ffd479', weight: 3, opacity: 0.75, dashArray: '2 9', lineCap: 'round', interactive: false }).addTo(map);
+  const me = L.marker([0, 0], {
+    icon: L.divIcon({ className: '', html: '<div class="me"><div class="npc hero"></div></div>', iconSize: [48, 72], iconAnchor: [24, 70] }),
+    interactive: false,
+    keyboard: false,
+    zIndexOffset: 1000,
+  });
+  const accuracy = L.circle([0, 0], { radius: 1, stroke: false, fillColor: '#ffd479', fillOpacity: 0.08, interactive: false });
+  mapView = { map, me, accuracy, guide, pins: new Map(), givers: new Map(), follow: true, placed: false };
+
+  // 指で地図を動かしたら、自分を追いかけるのをやめる（◎ で戻る）
+  map.on('dragstart', () => {
+    mapView.follow = false;
+    ui.recenterBtn.hidden = false;
+    publishMapState();
+  });
+  // moveend はドラッグ後の慣性が止まるまで来ないので、動いている間も伝える
+  map.on('move', publishMapState);
+
+  updateMapPosition();
+  render();
+}
+
+function updateMapPosition() {
+  if (!mapView || !here) return;
+  const ll = [here.lat, here.lng];
+  mapView.me.setLatLng(ll);
+  mapView.accuracy.setLatLng(ll).setRadius(Math.max(1, here.accuracy || 0));
+  if (!mapView.placed) {
+    mapView.placed = true;
+    mapView.accuracy.addTo(mapView.map);
+    mapView.me.addTo(mapView.map);
+    mapView.map.setView(ll, MAP_ZOOM, { animate: false });
+  } else if (mapView.follow) {
+    mapView.map.panTo(ll, { animate: false });
+  }
+}
+
+// 西へ進んでいるときは戦士を左に、東へ進んでいるときは右に向ける。
+// 方位が無い（止まっている・ワープした）ときと、真北・真南に近いときは向きを変えない（GPS のブレでくるくる回らない）
+function updateFacing(heading) {
+  if (typeof heading !== 'number' || !Number.isFinite(heading)) return;
+  const east = Math.sin(heading * Math.PI / 180);
+  if (Math.abs(east) < FACE_TURN_MIN) return;
+  demoState.facing = east < 0 ? 'left' : 'right';
+  const el = mapView && mapView.me.getElement();
+  if (el) el.querySelector('.npc').classList.toggle('left', demoState.facing === 'left');
+}
+
+// 自分と、その場所が両方入るように地図を引く（追いかけるのはやめ、◎ で戻れる）
+function showOnMap(place) {
+  if (!mapView || !here || !place) return;
+  mapView.follow = false;
+  ui.recenterBtn.hidden = false;
+  mapView.map.fitBounds(L.latLngBounds([[here.lat, here.lng], [place.lat, place.lng]]),
+    { paddingTopLeft: [40, 110], paddingBottomRight: [40, 240], maxZoom: MAP_ZOOM, animate: false });
+  publishMapState();
+}
+
+function syncGuide(goal) {
+  if (!mapView) return;
+  mapView.guide.setLatLngs(goal && here ? [[here.lat, here.lng], [goal.place.lat, goal.place.lng]] : []);
+}
+
+// 入口の絵は種類ごと（sprites/dungeon/<kind>.png）。知らない種類だけ絵文字で出す
+function pinIcon(d, near) {
+  const cls = `dg-pin${near ? ' near' : ''}${hero.cleared[d.id] ? ' cleared' : ''}${d.questId ? ' quest' : ''}`;
+  const known = Object.hasOwn(KIND_EMOJI, d.kind);
+  const look = known ? ` style="background-image:url('sprites/dungeon/${d.kind}.png')"` : '';
+  return L.divIcon({ className: '', html: `<div class="${cls}"${look}>${known ? '' : emojiOf(d.kind)}</div>`, iconSize: [96, 96], iconAnchor: [48, 91], popupAnchor: [0, -84] });
+}
+
+function giverIcon(q, near) {
+  const st = Quests.stateOf(progress, q.id);
+  const mark = QUEST_MARKS[st] ? `<div class="qg-mark${st === 'accepted' ? ' wait' : ''}">${QUEST_MARKS[st]}</div>` : '';
+  return L.divIcon({
+    className: '',
+    html: `<div class="qg-pin${near ? ' near' : ''}"><div class="npc" style="background-image:url('${Quests.spriteUrl(q.look)}')"></div>${mark}</div>`,
+    iconSize: [48, 72],
+    iconAnchor: [24, 70],
+    popupAnchor: [0, -76],
+  });
+}
+
+const AREA_STYLE = { color: '#c8582a', fillColor: '#c8582a', fillOpacity: 0.12 };
+const AREA_NEAR_STYLE = { color: '#ffd479', fillColor: '#ffd479', fillOpacity: 0.2 };
+const GIVER_AREA_STYLE = { color: '#9fc27a', fillColor: '#9fc27a', fillOpacity: 0.08, dashArray: '4 6' };
+const POPUP_OPTIONS = { autoPanPaddingTopLeft: [16, 90], autoPanPaddingBottomRight: [16, 200] };
+
+// 印の種類ごとの見た目（ダンジョン / クエスト主）。key が変わったときだけ絵を描き直す
+// near = 光らせるか（ダンジョンは入れるときだけ。攻略済みは範囲の中でも光らない）
+const MARKER_LOOKS = {
+  pins: { area: AREA_STYLE, icon: pinIcon, popup: popupFor, near: canEnterDungeon,
+    key: (d, near) => `${d.kind}|${near}|${Boolean(hero.cleared[d.id])}` },
+  givers: { area: GIVER_AREA_STYLE, icon: giverIcon, popup: giverPopup, near: q => q.dist != null && q.dist <= q.radius,
+    key: (q, near) => `${q.look}|${near}|${Quests.stateOf(progress, q.id)}` },
+};
+
+// 置かれたものを地図の印に反映する（増えた・消えた・範囲に入った・攻略した・依頼が進んだ）
+function syncMarkers(kind, list) {
+  if (!mapView) return;
+  const store = mapView[kind];
+  const look = MARKER_LOOKS[kind];
+  const seen = new Set();
+  for (const item of list) {
+    seen.add(item.id);
+    const near = look.near(item);
+    const key = look.key(item, near);
+    let pin = store.get(item.id);
+    if (!pin) {
+      const circle = L.circle([item.lat, item.lng], { radius: item.radius, weight: 1.5, interactive: false, ...look.area }).addTo(mapView.map);
+      const marker = L.marker([item.lat, item.lng], { icon: look.icon(item, near), keyboard: false, riseOnHover: true }).addTo(mapView.map);
+      marker.bindPopup(() => look.popup(item.id), POPUP_OPTIONS);
+      pin = { marker, circle, key: null, near: false };
+      store.set(item.id, pin);
+    }
+    pin.marker.setLatLng([item.lat, item.lng]);
+    pin.circle.setLatLng([item.lat, item.lng]).setRadius(item.radius);
+    if (pin.key !== key) {
+      if (pin.key !== null) pin.marker.setIcon(look.icon(item, near));
+      pin.circle.setStyle(near ? AREA_NEAR_STYLE : look.area);
+      if (pin.marker.isPopupOpen()) pin.marker.getPopup().update();   // 開いている案内もボタンの有無を合わせる
+      pin.key = key;
+      pin.near = near;
+    }
+  }
+  for (const [id, pin] of store) {
+    if (seen.has(id)) continue;
+    pin.marker.remove();
+    pin.circle.remove();
+    store.delete(id);
+  }
+  publishMapState();
+}
+
+function popupTitle(box, titleText, infoParts) {
+  const title = document.createElement('div');
+  title.className = 'dg-popup-title';
+  title.textContent = titleText;
+  const info = document.createElement('div');
+  info.className = 'sub';
+  info.textContent = infoParts.filter(Boolean).join(' ・ ');
+  box.append(title, info);
+}
+
+function popupAction(box, item, buttonText, hintText, onClick) {
+  if (item.dist != null && item.dist <= item.radius) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = buttonText;
+    btn.addEventListener('click', () => {
+      mapView.map.closePopup();
+      onClick();
+    });
+    box.append(btn);
+  } else if (item.dist != null) {
+    const hint = document.createElement('div');
+    hint.className = 'hint';
+    hint.textContent = `あと ${Math.ceil(item.dist - item.radius)} m 近づくと${hintText}`;
+    box.append(hint);
+  }
+}
+
+// 地図の印をタップしたときの案内。範囲に入っていれば、ここからも入れる
+function popupFor(id) {
+  const box = document.createElement('div');
+  box.className = 'dg-popup';
+  const d = sortedByDistance().find(x => x.id === id) || dungeons.find(x => x.id === id);
+  if (!d) {
+    box.textContent = 'このダンジョンは消えました';
+    return box;
+  }
+  popupTitle(box, `${d.questId ? '📜 ' : ''}${emojiOf(d.kind)} ${d.name}`, [
+    `危険度 ${stars(Rules.dangerOf(d.kind))}`,
+    d.dist != null ? `${Math.round(d.dist)} m` : null,
+    hero.cleared[d.id] ? '✅ 攻略済み' : null,
+  ]);
+  if (hero.cleared[d.id]) {
+    const hint = document.createElement('div');
+    hint.className = 'hint';
+    hint.textContent = '攻略したダンジョンには、もう入れない';
+    box.append(hint);
+  } else {
+    popupAction(box, d, '⚔️ 入る', '入れる', () => enter(d.id));
+  }
+  return box;
+}
+
+// クエスト主をタップしたときの案内。近くにいれば、ここからも話しかけられる
+function giverPopup(id) {
+  const box = document.createElement('div');
+  box.className = 'dg-popup qg-popup';
+  const q = questsByDistance().find(x => x.id === id) || quests.find(x => x.id === id);
+  if (!q) {
+    box.textContent = 'クエスト主はいなくなりました';
+    return box;
+  }
+  const target = targetOf(q);
+  popupTitle(box, giverName(q), [
+    `📜 ${Quests.requestFor(target ? target.kind : null).title}`,
+    QUEST_STATE_TEXT[Quests.stateOf(progress, q.id)],
+    q.dist != null ? `${Math.round(q.dist)} m` : null,
+  ]);
+  popupAction(box, q, '💬 話しかける', '話せる', () => openTalk(q.id));
+  return box;
+}
+
+function publishMapState() {
+  if (!mapView) return;
+  const c = mapView.map.getCenter();
+  const b = mapView.map.getBounds();
+  demoState.map = {
+    ready: true,
+    follow: mapView.follow,
+    center: { lat: c.lat, lng: c.lng },
+    bounds: { south: b.getSouth(), west: b.getWest(), north: b.getNorth(), east: b.getEast() },
+    zoom: mapView.map.getZoom(),
+    pins: mapView.pins.size,
+    near: [...mapView.pins].filter(([, pin]) => pin.near).map(([id]) => id),
+    givers: mapView.givers.size,
+    nearGivers: [...mapView.givers].filter(([, pin]) => pin.near).map(([id]) => id),
+  };
+}
+
+ui.recenterBtn.addEventListener('click', () => {
+  if (!mapView || !here) return;
+  mapView.follow = true;
+  ui.recenterBtn.hidden = true;
+  mapView.map.setView([here.lat, here.lng], mapView.map.getZoom(), { animate: false });
+});
+
+ui.questLine.addEventListener('click', () => {
+  const goal = currentObjective();
+  if (goal) showOnMap(goal.place);
+});
+
+function showToast(text) {
+  ui.toast.textContent = text;
+  ui.toast.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { ui.toast.hidden = true; }, TOAST_MS);
+}
+
+// ---- クエスト主との会話 ----
+// 話しかけられるのは近く（クエスト主の半径の中）にいるときだけ。話し始めた後に離れても続けられる
+function openTalk(id) {
+  const q = questsByDistance().find(x => x.id === id && x.dist <= x.radius);
+  if (!q || run || talking) return;
+  talking = q.id;
+  talkNote = null;
+  demoState.talking = q.id;
+  ui.talkScreen.hidden = false;
+  renderTalk();
+  render();
+}
+
+function closeTalk() {
+  talking = null;
+  talkNote = null;
+  demoState.talking = null;
+  ui.talkScreen.hidden = true;
+  render();
+}
+
+function talkButton(id, text, onClick, className = '') {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.id = id;
+  btn.className = className;
+  btn.textContent = text;
+  btn.addEventListener('click', onClick);
+  return btn;
+}
+
+function renderTalk() {
+  const q = quests.find(x => x.id === talking);
+  if (!q) {
+    closeTalk();
+    return;
+  }
+  const target = targetOf(q);
+  const req = Quests.requestFor(target ? target.kind : null);
+  const st = Quests.stateOf(progress, q.id);
+  ui.talkSprite.style.backgroundImage = `url('${Quests.spriteUrl(q.look)}')`;
+  ui.talkName.textContent = giverName(q);
+  ui.talkSub.textContent = `📜 ${req.title} ・ ${QUEST_STATE_TEXT[st]}`;
+
+  const actions = [];
+  if (talkNote) {
+    ui.talkText.textContent = talkNote;
+    actions.push(talkButton('talkCloseBtn', '閉じる', closeTalk));
+  } else if (st === 'new') {
+    const danger = target ? `危険度 ${stars(Rules.dangerOf(target.kind))}\n` : '';
+    ui.talkText.textContent = `${req.ask}\n\n${danger}報酬 💰 ${req.gold} G ・ 経験値 ${req.xp}`;
+    actions.push(
+      talkButton('talkAcceptBtn', '📜 引き受ける', () => acceptQuest(q)),
+      talkButton('talkDeclineBtn', '断る', closeTalk, 'quiet'));
+  } else if (st === 'accepted') {
+    ui.talkText.textContent = target
+      ? `${emojiOf(target.kind)} ${target.name} は、ここから${here ? wayTo(target) : '近く'}です。\n攻略したら、また声を掛けてください。`
+      : '目的地が見つかりません（地図ツールで置き直してください）';
+    actions.push(
+      talkButton('talkMapBtn', '🗺️ 地図で見る', () => {
+        closeTalk();
+        showOnMap(target);
+      }),
+      talkButton('talkCloseBtn', '閉じる', closeTalk, 'quiet'));
+  } else if (st === 'cleared') {
+    ui.talkText.textContent = `${req.thanks}\nお礼を受け取ってください。`;
+    actions.push(talkButton('talkReportBtn', `💰 報酬を受け取る`, () => reportQuest(q)));
+  } else {
+    ui.talkText.textContent = 'あの時は、本当にありがとうございました。';
+    actions.push(talkButton('talkCloseBtn', '閉じる', closeTalk));
+  }
+  ui.talkActions.replaceChildren(...actions);
+}
+
+// 引き受けると目的地のダンジョンが地図に現れる。会話を閉じ、自分と目的地が見えるように地図を引く
+function acceptQuest(q) {
+  const target = targetOf(q);
+  closeTalk();
+  setProgress(Quests.accept(progress, q.id));
+  if (!target) return;
+  showToast(`📜 ${emojiOf(target.kind)} ${target.name} が地図に現れた！`);
+  showOnMap(target);
+}
+
+function reportQuest(q) {
+  const target = targetOf(q);
+  const { progress: next, reward } = Quests.report(progress, q.id, target ? target.kind : null);
+  if (!reward) return;
+  const levelBefore = Rules.levelInfo(hero.xp).level;
+  hero = { ...hero, xp: hero.xp + reward.xp, gold: hero.gold + reward.gold };
+  saveHero();
+  renderHero();
+  const lines = ['🎉 依頼を達成した！', `💰 +${reward.gold} G`, `経験値 +${reward.xp}`];
+  const levelAfter = Rules.levelInfo(hero.xp).level;
+  if (levelAfter > levelBefore) lines.push(`⬆️ レベルアップ！ Lv ${levelAfter}`);
+  talkNote = lines.join('\n');
+  setProgress(next);   // 目的地のダンジョンは地図から消える
+  renderTalk();
+}
+
+ui.talkBtn.addEventListener('click', () => {
+  const q = questsByDistance().find(x => x.dist <= x.radius);
+  if (q) openTalk(q.id);
+});
+
+// 会話窓の外（暗いところ）を押しても閉じる
+ui.talkScreen.addEventListener('click', e => {
+  if (e.target === ui.talkScreen) closeTalk();
+});
+
+// ---- ダンジョンの中 ----
+// 決着がついたら 1 回だけ、冒険者の記録へ足して保存する
+function settleIfOver() {
+  if (!run || run.phase !== 'result' || settled) return;
+  settled = true;
+  const { hero: next, levelUps } = Rules.settle(hero, run);
+  hero = next;
+  saveHero();
+  renderHero();
+  const lines = run.result === 'win' ? ['🏆 攻略した！', `宝箱に 💰 ${run.gold} G`, `経験値 +${run.xp}`]
+    : run.result === 'lose' ? ['💀 力尽きた…', '入口まで這って戻った。', `倒した敵の経験値 +${run.xp} は持ち帰った`]
+    : [];
+  if (levelUps > 0) lines.push(`⬆️ レベルアップ！ Lv ${Rules.levelInfo(hero.xp).level}`);
+  // 受けている依頼の目的地だったら「報告できる」へ（報酬はクエスト主に報告したときに出る）
+  if (run.result === 'win') {
+    const { progress: nextProgress, cleared } = Quests.markCleared(progress, quests, run.dungeonId);
+    for (const id of cleared) lines.push(`📜 依頼を果たした！ ${quests.find(x => x.id === id).name} に報告しよう`);
+    if (cleared.length > 0) setProgress(nextProgress);
+  }
+  resultText = lines.join('\n');
+}
+
+function renderDungeon() {
+  const r = run;
+  const { hero: you, enemy } = r;
+  const inRoom = r.phase === 'fight' || r.phase === 'room-clear';
+  const bossRoom = r.room === r.lineup.length;
+
+  ui.dgRoom.textContent = inRoom ? `部屋 ${r.room} / ${r.lineup.length}${bossRoom ? '（ボス）' : ''}` : `危険度 ${stars(r.danger)}`;
+  ui.dgBody.hidden = inRoom;
+  if (r.phase === 'intro') ui.dgBody.textContent = `${r.blurb}\n敵が ${r.lineup.length} 体いる。`;
+  if (r.phase === 'result') ui.dgBody.textContent = resultText;
+
+  ui.fightView.hidden = !inRoom;
+  if (inRoom) {
+    ui.enemyEmoji.textContent = enemy.emoji;
+    ui.enemyName.textContent = enemy.hp === 0 ? `${enemy.name}（倒した）` : enemy.name;
+    ui.enemyBar.style.width = `${100 * enemy.hp / enemy.maxHp}%`;
+    ui.enemySub.textContent = `HP ${enemy.hp} / ${enemy.maxHp} ・ 防御 ${enemy.ac}`;
+    ui.enemyCard.classList.toggle('down', enemy.hp === 0);
+    ui.youName.textContent = `あなた（Lv ${you.level}）`;
+    ui.youBar.style.width = `${100 * you.hp / you.maxHp}%`;
+    ui.youBar.classList.toggle('low', you.hp <= you.maxHp / 3);
+    ui.youSub.textContent = `HP ${you.hp} / ${you.maxHp} ・ 攻撃 +${you.atk} ・ 防御 ${you.ac}`;
+  }
+
+  ui.advanceBtn.hidden = r.phase !== 'intro' && r.phase !== 'room-clear';
+  ui.advanceBtn.textContent = r.phase === 'intro' ? '▶ 奥へ進む'
+    : r.room + 1 === r.lineup.length ? '▶ ボスの部屋へ' : '▶ 次の部屋へ';
+  ui.attackBtn.hidden = r.phase !== 'fight';
+  ui.potionBtn.hidden = r.phase !== 'fight';
+  ui.potionBtn.disabled = you.potions === 0 || you.hp >= you.maxHp;
+  ui.potionBtn.textContent = `🧪 回復薬（${you.potions}）`;
+  ui.leaveBtn.textContent = r.phase === 'fight' ? '🏃 逃げる' : '出る';
+
+  ui.log.hidden = r.log.length === 0;
+  ui.log.replaceChildren(...r.log.slice(0, LOG_LINES).map(text => {
+    const li = document.createElement('li');
+    li.textContent = text;
+    return li;
+  }));
+
+  demoState.battle = {
+    phase: r.phase, room: r.room, rooms: r.lineup.length, lineup: r.lineup.slice(),
+    enemyId: enemy ? enemy.id : null, enemyHp: enemy ? enemy.hp : null,
+    heroHp: you.hp, heroMaxHp: you.maxHp, potions: you.potions,
+    turn: r.turn, xp: r.xp, gold: r.gold, result: r.result,
+  };
+}
+
+function doAction(action) {
+  if (!run) return;
+  Rules.act(run, action, Math.random);
+  settleIfOver();
+  renderDungeon();
+}
+
+// 範囲に入っていて、まだ攻略していないダンジョンにだけ入れる（下のボタンからも、地図の印からも）
+function enter(id) {
+  const target = sortedByDistance().find(d => d.id === id && canEnterDungeon(d));
+  if (!target || run || talking) return;
+  demoState.inside = target.id;
+  run = Rules.startRun(target, hero.xp);
+  settled = false;
+  resultText = '';
+  ui.dgTitle.textContent = `${emojiOf(target.kind)} ${target.name}`;
+  ui.screen.hidden = false;
+  ui.screen.scrollTop = 0;
+  renderDungeon();
+  render();
+}
+
+ui.enterBtn.addEventListener('click', () => {
+  const target = sortedByDistance().find(canEnterDungeon);
+  if (target) enter(target.id);
+});
+
+ui.advanceBtn.addEventListener('click', () => {
+  if (!run) return;
+  Rules.advance(run);
+  renderDungeon();
+});
+
+ui.attackBtn.addEventListener('click', () => doAction('attack'));
+ui.potionBtn.addEventListener('click', () => doAction('potion'));
+
+// 戦いの途中なら「逃げる」。倒した分の経験値は持ち帰り、宝箱はもらえない
+ui.leaveBtn.addEventListener('click', () => {
+  if (run) {
+    Rules.leave(run);
+    settleIfOver();
+  }
+  run = null;
+  demoState.inside = null;
+  demoState.battle = null;
+  ui.screen.hidden = true;
+  render();
+});
+
+// ---- 位置 ----
+function onPosition(pos) {
+  const { latitude, longitude, accuracy, speed, heading } = pos.coords;
+  demoState.updates += 1;
+  Object.assign(demoState, { lat: latitude, lng: longitude, speed, error: null });
+  here = { lat: latitude, lng: longitude, accuracy };
+  const speedText = typeof speed === 'number' ? `${(speed * 3.6).toFixed(1)} km/h` : '-';
+  ui.status.textContent = `${modeText} ・ ${latitude.toFixed(6)}, ${longitude.toFixed(6)} ・ ±${Math.round(accuracy)} m ・ ${speedText} ・ 更新 ${demoState.updates} 回`;
+  updateMapPosition();
+  updateFacing(heading);
+  render();
+}
+
+function onError(err) {
+  demoState.error = err.message;
+  ui.status.textContent = `${modeText} ・ 位置が取れません（${err.message}）`;
+}
+
+renderHero();
+refreshVisible();
+render();
+loadDungeons();
+setInterval(loadDungeons, POLL_MS);
+
+// Leaflet は defer で読むので、読み終わる（または失敗する）のを待ってから地図を作る
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initMap);
+else initMap();
+
+if ('geolocation' in navigator) {
+  navigator.geolocation.watchPosition(onPosition, onError, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+} else {
+  onError({ message: 'このブラウザは位置情報に対応していません' });
+}
+</script>
+</body>
+</html>

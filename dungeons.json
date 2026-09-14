@@ -1,0 +1,48 @@
+{
+  "version": 2,
+  "updatedAt": "2026-09-14T22:24:47.028Z",
+  "dungeons": [
+    {
+      "id": "d-615azt6pu",
+      "name": "ゴブリンの巣穴",
+      "kind": "goblin",
+      "lat": 35.68125671575192,
+      "lng": 139.6585249900818,
+      "radius": 40,
+      "questId": "q-dllczm6pu",
+      "createdAt": "2026-09-14T21:07:44.898Z"
+    },
+    {
+      "id": "d-6rr6dv96b",
+      "name": "ゴブリンの巣穴",
+      "kind": "goblin",
+      "lat": 35.68235476778513,
+      "lng": 139.65699076652527,
+      "radius": 40,
+      "questId": "q-6agbqn96b",
+      "createdAt": "2026-09-14T22:24:47.027Z"
+    }
+  ],
+  "quests": [
+    {
+      "id": "q-dllczm6pu",
+      "name": "村の長老",
+      "look": "oldman",
+      "lat": 35.68001921042849,
+      "lng": 139.65887904167175,
+      "radius": 30,
+      "dungeonId": "d-615azt6pu",
+      "createdAt": "2026-09-14T21:07:44.898Z"
+    },
+    {
+      "id": "q-6agbqn96b",
+      "name": "ニカ",
+      "look": "warrior",
+      "lat": 35.68069896924952,
+      "lng": 139.6577525138855,
+      "radius": 30,
+      "dungeonId": "d-6rr6dv96b",
+      "createdAt": "2026-09-14T22:24:47.027Z"
+    }
+  ]
+}
