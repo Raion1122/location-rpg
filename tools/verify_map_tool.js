@@ -12,6 +12,7 @@ const { spawn } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
 const PORT = 8793;                                   // 起動用 .vbs の 8790 とぶつけない
+const STATIC_PORT = 8794;                            // GitHub Pages のふり（中継サーバー無しでファイルを配るだけ）
 const BASE = `http://127.0.0.1:${PORT}`;
 const OTHER_HOST = 'example.com';                    // 公開ホストのふり（差し替え禁止のはず）
 const LAN_HOST = 'my-pc.local';                      // 自宅 LAN のふり（差し替え可のはず）
@@ -57,6 +58,33 @@ function startServer() {
       });
     };
     poll();
+  });
+}
+
+// GitHub Pages のふり: 中継サーバーを置かず、プロジェクトのファイルをそのまま配るだけ（/gps/… は 404）。
+// dungeons.json だけは検証用の配置を返す（プロジェクトの dungeons.json は読まない）。来たパスは hits に積む
+const CONTENT_TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.png': 'image/png' };
+function startStaticServer(fixture, hits) {
+  const server = http.createServer((req, res) => {
+    const pathname = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+    hits.push(pathname);
+    if (pathname === '/dungeons.json') {
+      res.writeHead(200, { 'Content-Type': CONTENT_TYPES['.json'] });
+      res.end(JSON.stringify(fixture));
+      return;
+    }
+    const file = path.join(ROOT, pathname);
+    if (!file.startsWith(ROOT + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('not found');
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': CONTENT_TYPES[path.extname(file)] || 'application/octet-stream' });
+    fs.createReadStream(file).pipe(res);
+  });
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(STATIC_PORT, '127.0.0.1', () => resolve(server));
   });
 }
 
@@ -774,6 +802,41 @@ async function main() {
       noLeafletState.leaflet === 'undefined' && noLeafletState.notice && noLeafletState.updates > 0 && noLeafletState.map === null,
       JSON.stringify(noLeafletState));
     await noLeaflet.close();
+
+    // ---- 15-3. 中継サーバーが無いとき（GitHub Pages）は dungeons.json を直接読む ----
+    const withServer = await gameState(game);
+    check('配置の読み先: 中継サーバーがあるときはサーバーから読む', withServer.source === 'server', String(withServer.source));
+    const staticHits = [];
+    const staticFixture = {
+      version: 2,
+      dungeons: [
+        { id: 'd-static-1', name: '検証の巣穴', kind: 'goblin', lat: SENDAI.lat + 0.001, lng: SENDAI.lng, radius: 40 },
+        { id: 'd-static-2', name: '依頼の目的地', kind: 'orc', lat: SENDAI.lat + 0.002, lng: SENDAI.lng, radius: 40, questId: 'q-static-1' },
+      ],
+      quests: [
+        { id: 'q-static-1', name: '検証の長老', look: 'oldman', lat: SENDAI.lat, lng: SENDAI.lng + 0.001, radius: 30, dungeonId: 'd-static-2' },
+      ],
+    };
+    const staticServer = await startStaticServer(staticFixture, staticHits);
+    try {
+      const pagesLike = await browser.newPage();
+      watchErrors(pagesLike, 'static');
+      await pagesLike.goto(`http://127.0.0.1:${STATIC_PORT}/demo-game.html`, { waitUntil: 'domcontentloaded' });
+      await waitFor(() => pagesLike.evaluate(() => Boolean(window.demoGame && window.demoGame.quests === 1)));
+      const staticState = await pagesLike.evaluate(() => ({ source: window.demoGame.source, dungeons: window.demoGame.dungeons, quests: window.demoGame.quests }));
+      // 受ける前の依頼の目的地は出ないので、ダンジョンは 1 つ・クエスト主は 1 人
+      check('中継サーバー無し(GitHub Pages): dungeons.json を直接読み、ダンジョンとクエスト主が出る',
+        staticState.source === 'file' && staticState.dungeons === 1 && staticState.quests === 1, JSON.stringify(staticState));
+      await sleep(7000);   // ゲームが 3 秒ごとに拾い直す回を 2 回ほど待つ
+      const apiHits = staticHits.filter(p => p === '/gps/dungeons').length;
+      const fileHits = staticHits.filter(p => p === '/dungeons.json').length;
+      check('中継サーバー無し(GitHub Pages): 404 の中継サーバーは 1 回で見切り、保存ファイルも 3 秒ごとには読み直さない',
+        apiHits === 1 && fileHits === 1, `/gps/dungeons ${apiHits} 回 / dungeons.json ${fileHits} 回`);
+      await pagesLike.close();
+    } finally {
+      staticServer.closeAllConnections();
+      staticServer.close();
+    }
 
     // ---- 16. 差し替えてはいけない場面 ----
     const plain = await browser.newPage();

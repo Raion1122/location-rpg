@@ -205,14 +205,17 @@
 <script>
 'use strict';
 // 位置ゲーの動作確認用の画面。
-// 位置は標準の navigator.geolocation だけで取り、ダンジョンとクエスト主の配置は中継サーバーから読む。
+// 位置は標準の navigator.geolocation だけで取り、ダンジョンとクエスト主の配置は中継サーバーから読む
+// （中継サーバーが無い GitHub Pages などでは、同じフォルダの dungeons.json を直接読む）。
 // fake-gps.js が位置を差し替えているかどうかを、このコードは知らなくてよい。
 // 地上は地図（Leaflet）に自分・ダンジョン・クエスト主を出す。地図が読めないときは下の一覧だけで遊べる。
 // ダンジョンの中の戦いは dungeon.js（DungeonRules）、依頼の進み方は quest.js（QuestRules）が決め、
 // ここは表示とボタンだけを受け持つ。
 
-const DUNGEONS_URL = '/gps/dungeons';
+const DUNGEONS_URL = '/gps/dungeons';        // 中継サーバーが配る配置（家で地図ツールと一緒に使うとき）
+const DUNGEONS_FILE_URL = 'dungeons.json';   // 中継サーバーが無いとき（GitHub Pages など）は、同じフォルダの保存ファイルを直接読む
 const POLL_MS = 3000;          // 地図ツールで置いた内容を拾い直す間隔
+const FILE_POLL_MS = 60000;    // 保存ファイルは push したときしか変わらないので、読み直しは 1 分ごとでよい
 const SHOW_COUNT = 3;          // 下の一覧に出す数（近い順）
 const LOG_LINES = 8;
 const HERO_KEY = 'locgame.hero.v1';     // 冒険者の記録（この端末のブラウザにだけ保存する）
@@ -276,9 +279,12 @@ const demoState = window.demoGame = {
   dungeons: 0, canEnter: null, inside: null, facing: 'right',
   quests: 0, canTalk: null, talking: null, questState: {},
   hero: null, battle: null, map: null,
+  source: null,   // 配置の読み先 'server'（中継サーバー） / 'file'（dungeons.json を直接）
 };
 
 let world = { dungeons: [], quests: [] };   // 中継サーバーから読んだ配置そのまま（受注前の目的地も入っている）
+let dungeonsUrl = DUNGEONS_URL;   // 中継サーバーが 404 を返したら DUNGEONS_FILE_URL に切り替え、以後はそちらを読む
+let fileLoadedAt = 0;             // 保存ファイルを最後に読みに行った時刻
 let dungeons = [];       // そのうち、いま出すダンジョン
 let quests = [];         // クエスト主
 let here = null;         // { lat, lng, accuracy }
@@ -378,9 +384,17 @@ function setProgress(next) {
 
 // ---- 地上：近くのダンジョンとクエスト主 ----
 async function loadDungeons() {
+  if (dungeonsUrl === DUNGEONS_FILE_URL && Date.now() - fileLoadedAt < FILE_POLL_MS) return;
   try {
-    const res = await fetch(DUNGEONS_URL, { cache: 'no-store' });
+    let res = await fetch(dungeonsUrl, { cache: 'no-store' });
+    if (res.status === 404 && dungeonsUrl === DUNGEONS_URL) {
+      // 中継サーバーが無い（GitHub Pages など）。つながらないだけ（通信エラー）なら切り替えない
+      dungeonsUrl = DUNGEONS_FILE_URL;
+      res = await fetch(dungeonsUrl, { cache: 'no-store' });
+    }
+    if (dungeonsUrl === DUNGEONS_FILE_URL) fileLoadedAt = Date.now();
     if (!res.ok) return;
+    demoState.source = dungeonsUrl === DUNGEONS_URL ? 'server' : 'file';
     const data = await res.json();
     const next = {
       dungeons: Array.isArray(data.dungeons) ? data.dungeons : [],
