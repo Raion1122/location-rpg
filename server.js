@@ -1,12 +1,15 @@
 // server.js — 疑似GPS 中継サーバー（依存ゼロ・Node標準だけ）
 //
-// これ 1 本で 2 役:
+// これ 1 本で 3 役:
 //   1. 静的ファイル配信（map.html / fake-gps.js / demo-game.html など）
 //   2. 位置の中継（Server-Sent Events）。地図ツールが送ったピンの位置を、
 //      同じ Wi-Fi のスマホで開いたゲームへ配る。
+//   3. 「📤 スマホ用に公開」: dungeons.json だけを git でコミットして GitHub へ push する
+//      （GitHub Pages のゲームがこのファイルを読む）。この PC で開いた地図ツールからだけ受ける。
 //
 //   起動: node server.js         （既定 0.0.0.0:8790 = LAN からも届く）
 //   環境変数: PORT / HOST で変えられる（検証は HOST=127.0.0.1 で使う）
+//            DUNGEONS_FILE / PUBLISH_REPO で保存先と git のフォルダを変えられる（検証は一時フォルダを使う）
 //
 // 位置ソースの差し替え自体は fake-gps.js が行い、localhost / 自宅 LAN からしか
 // 有効にならない。公開先(HTTPS の外部ホスト)では効かないので、遊ぶ人はごまかせない。
@@ -16,6 +19,7 @@ const http = require('http');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { execFile } = require('child_process');
 
 const ROOT = __dirname;                       // server.js はプロジェクト直下に置く
 const PORT = parseInt(process.env.PORT || '8790', 10);
@@ -28,6 +32,11 @@ const DUNGEONS_FILE = process.env.DUNGEONS_FILE || path.join(ROOT, 'dungeons.jso
 const MAX_DUNGEONS = 500;
 const MAX_QUESTS = 200;
 const ID_RE = /^[A-Za-z0-9_-]{1,40}$/;
+// 「📤 スマホ用に公開」で git を回すフォルダ。検証では一時フォルダの練習用リポジトリに差し替える
+const PUBLISH_REPO = process.env.PUBLISH_REPO || ROOT;
+const GIT_TIMEOUT_MS = 15000;
+const PUSH_TIMEOUT_MS = 90000;                 // GitHub の返事やログインの画面を待ち続けて止まらないように
+const PUSHED_COMMIT_PREFIX = 'dungeons.json:'; // 配置だけのコミットの件名の書き出し（手で push したときも同じ）
 
 const CONTENT_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -140,6 +149,91 @@ function writeWorld(world) {
   fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
   fs.renameSync(tmp, DUNGEONS_FILE);   // 書き途中の壊れたファイルを残さない
   return data;
+}
+
+// ---- スマホ用に公開（dungeons.json だけをコミットして GitHub へ push）----
+// GitHub Pages のゲームは dungeons.json を直接読むので、push すれば外のスマホにも届く
+
+let publishing = false;                        // 二度押しで git を重ねて走らせない
+
+function git(args, timeout = GIT_TIMEOUT_MS) {
+  return new Promise(resolve => {
+    // GIT_TERMINAL_PROMPT=0: 見えない窓でユーザー名を聞かれて止まらない / LC_ALL=C: 失敗の理由を英語のまま見分ける
+    execFile('git', ['-C', PUBLISH_REPO, ...args], {
+      timeout,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C' },
+    }, (err, stdout, stderr) => {
+      resolve({
+        ok: !err,
+        missing: Boolean(err && err.code === 'ENOENT'),
+        timedOut: Boolean(err && err.killed),
+        out: String(stdout || '').trim(),
+        err: String(stderr || '').trim(),
+      });
+    });
+  });
+}
+
+// git の出力から理由の 1 行を拾う（fatal: / error: の行を優先）
+function gitReason(text) {
+  const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  return lines.find(line => /^(fatal|error):/.test(line)) || lines.pop() || '理由不明';
+}
+
+function failed(error, status = 500) {
+  return { status, body: { ok: false, error } };
+}
+
+// この PC（localhost）で開いた地図ツールからの依頼だけ受ける。同じ Wi-Fi のスマホや、よそのページからは断る
+function fromThisPc(req) {
+  const addr = req.socket.remoteAddress || '';
+  if (addr !== '127.0.0.1' && addr !== '::1' && addr !== '::ffff:127.0.0.1') return false;
+  const host = req.headers.host || '';
+  if (!/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(host)) return false;
+  const origin = req.headers.origin;
+  return !origin || origin === `http://${host}`;
+}
+
+// 戻り値は { status: HTTP の番号, body: 返す JSON }
+async function publishWorld() {
+  const rel = path.relative(PUBLISH_REPO, DUNGEONS_FILE).split(path.sep).join('/');
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return failed('保存ファイル（dungeons.json）が git のフォルダの外にあります');
+  const upstream = await git(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
+  if (upstream.missing) return failed('git が見つかりません（Git for Windows を入れてから、中継サーバーを起動し直してください）');
+  if (!upstream.ok) return failed('送り先の GitHub が決まっていません（git のフォルダでない・今のブランチに送り先が無い）');
+
+  const changes = await git(['status', '--porcelain', '--', rel]);
+  if (!changes.ok) return failed('変更を調べられませんでした: ' + gitReason(changes.err));
+  if (changes.out) {
+    const world = readWorld();
+    const message = `${PUSHED_COMMIT_PREFIX} 地図ツールの「スマホ用に公開」から（ダンジョン ${world.dungeons.length} 個・クエスト主 ${world.quests.length} 人）`;
+    const added = await git(['add', '--', rel]);
+    // -- rel: ほかに書きかけのファイルがあっても巻き込まない
+    const committed = added.ok ? await git(['commit', '-m', message, '--', rel]) : added;
+    if (!committed.ok) return failed('コミットできませんでした: ' + gitReason(committed.err || committed.out));
+  }
+
+  // まだ送っていないコミット（前に送れなかった配置や、手でコミットした分も含む）
+  const pending = await git(['log', '--format=%s', '@{u}..HEAD']);
+  if (!pending.ok) return failed('送る分を調べられませんでした: ' + gitReason(pending.err));
+  const subjects = pending.out ? pending.out.split(/\r?\n/) : [];
+  if (subjects.length === 0) {
+    return { status: 200, body: { ok: true, status: 'nochange', message: '前に送ったときから配置が変わっていないので、送るものはありません' } };
+  }
+
+  const pushed = await git(['push'], PUSH_TIMEOUT_MS);
+  if (!pushed.ok) {
+    let why = gitReason(pushed.err);
+    if (pushed.timedOut) why = `GitHub から ${PUSH_TIMEOUT_MS / 1000} 秒返事がありません。ログインの画面が出ていないか見てください`;
+    else if (/\[rejected\]|non-fast-forward|fetch first/.test(pushed.err)) why = 'GitHub 側に、この PC に無い変更があります。先に git pull で取り込んでください';
+    else if (/Authentication failed|could not read Username|terminal prompts disabled/.test(pushed.err)) why = 'GitHub にログインできませんでした';
+    return failed(`送れませんでした（${why}）。コミットは PC に残っているので、直ったらもう一度押すと送ります`);
+  }
+  const head = await git(['rev-parse', '--short', 'HEAD']);
+  const others = subjects.filter(s => !s.startsWith(PUSHED_COMMIT_PREFIX)).length;
+  let message = `GitHub に送りました（${head.out}）。1〜2 分でスマホ（GitHub Pages）に反映されます`;
+  if (others > 0) message += `。配置のほかに、まだ送っていなかったコミット ${others} 件も一緒に送りました`;
+  return { status: 200, body: { ok: true, status: 'pushed', message, commit: head.out, sent: subjects.length, others } };
 }
 
 function sse(res, event, data) {
@@ -289,6 +383,33 @@ const server = http.createServer((req, res) => {
     }
     res.writeHead(405);
     res.end();
+    return;
+  }
+  // 置いた配置をスマホ用に公開（dungeons.json だけをコミットして push）。この PC で開いた地図ツールからだけ
+  if (pathname === '/gps/push') {
+    const reply = ({ status, body }) => {
+      res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(body));
+    };
+    if (req.method !== 'POST') {
+      res.writeHead(405);
+      res.end();
+      return;
+    }
+    if (!fromThisPc(req)) {
+      reply(failed('公開は、この PC で開いた地図ツール（localhost）からだけできます', 403));
+      return;
+    }
+    if (publishing) {
+      reply(failed('いま送っている途中です。終わるまで待ってください', 409));
+      return;
+    }
+    publishing = true;
+    publishWorld()
+      .catch(e => failed('公開の途中で止まりました: ' + e.message))
+      .then(reply)
+      .catch(() => {})
+      .finally(() => { publishing = false; });
     return;
   }
   if (pathname === '/gps/info') {

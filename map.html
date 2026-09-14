@@ -40,6 +40,7 @@
   .gap { margin-top: 6px; }
   button, .btn { padding: 5px 10px; border: 1px solid var(--line); border-radius: 6px; background: #2a303d; color: var(--panel-fg); font: inherit; text-decoration: none; cursor: pointer; }
   button:hover, .btn:hover { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: not-allowed; border-color: var(--line); }
   .speeds label, .opt { display: flex; align-items: center; gap: 6px; padding: 3px 0; cursor: pointer; }
   input[type="text"] { flex: 1; min-width: 0; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--field); color: var(--panel-fg); font-family: Consolas, "Courier New", monospace; }
   .hint { color: var(--muted); line-height: 1.8; }
@@ -47,6 +48,9 @@
   .status { color: var(--muted); }
   .status.on { color: var(--ok); }
   .error { min-height: 1em; margin-top: 4px; color: #ff7b7b; }
+  .notice { min-height: 1em; margin-top: 4px; color: var(--muted); line-height: 1.6; }
+  .notice.ok { color: var(--ok); }
+  .notice.bad { color: #ff7b7b; }
   select, input[type="number"] { padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--field); color: var(--panel-fg); font: inherit; }
   select { flex: 1; min-width: 0; }
   input[type="number"] { width: 74px; font-family: Consolas, "Courier New", monospace; }
@@ -149,6 +153,13 @@
   </section>
 
   <section>
+    <div class="label">スマホ用に公開（外で遊ぶ GitHub Pages へ）</div>
+    <div class="row"><button type="button" id="pushBtn">📤 スマホ用に公開（push）</button></div>
+    <div class="notice" id="pushStatus"></div>
+    <div class="hint">置いたダンジョンとクエスト主（dungeons.json）だけを GitHub に送る</div>
+  </section>
+
+  <section>
     <div class="label">ダンジョンを置く</div>
     <div class="row"><input type="text" id="dgName" placeholder="名前（空なら種類の名前）" autocomplete="off"></div>
     <div class="row gap">
@@ -230,6 +241,9 @@ const KINDS = [
 ];
 const kindOf = id => KINDS.find(k => k.id === id) || KINDS[0];
 const OLD_SERVER_TEXT = '中継サーバーが古いままです。動いている node server.js を止めて、起動し直してください';
+// 「📤 スマホ用に公開」: 中継サーバーが dungeons.json だけをコミットして GitHub へ push する。押せるのはこの PC で開いたときだけ
+const PUSH_URL = '/gps/push';
+const THIS_PC = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
 
 // ---- クエスト主（見た目の一覧・話しかけられる距離は quest.js と共通） ----
 const Quests = window.QuestRules;
@@ -534,6 +548,8 @@ const ui = {
   questHint: el('questHint'),
   questError: el('questError'),
   questList: el('questList'),
+  pushBtn: el('pushBtn'),
+  pushStatus: el('pushStatus'),
 };
 
 function formatDistance(m) {
@@ -697,8 +713,16 @@ async function loadDungeons() {
   renderDungeons();
 }
 
-// ダンジョンとクエスト主はまとめて保存する（クエスト主と目的地が片方だけ残らないように）
-async function saveDungeons() {
+// ダンジョンとクエスト主はまとめて保存する（クエスト主と目的地が片方だけ残らないように）。
+// 「スマホ用に公開」は最後の保存が終わるのを待ってから送る
+let lastSave = Promise.resolve(true);
+function saveDungeons() {
+  lastSave = postWorld();
+  return lastSave;
+}
+
+// 保存できたら true
+async function postWorld() {
   let message = '';
   try {
     const res = await fetch(DUNGEONS_URL, {
@@ -714,6 +738,9 @@ async function saveDungeons() {
   }
   ui.dgError.textContent = message;
   ui.questError.textContent = message;
+  // 送った後に置き直したら「送りました」は古い知らせなので消す
+  if (!message && ui.pushStatus.classList.contains('ok')) showPush('');
+  return message === '';
 }
 
 function placeDungeon(lat, lng) {
@@ -952,6 +979,44 @@ ui.placeBtn.addEventListener('click', () => setPlacing(!placing));
 ui.questBtn.addEventListener('click', () => setQuestPlacing(!questPlacing));
 loadDungeons();
 
+// ---- スマホ用に公開 ----
+let pushing = false;
+
+function showPush(text, tone = '') {
+  ui.pushStatus.textContent = text;
+  ui.pushStatus.className = tone ? `notice ${tone}` : 'notice';
+}
+
+async function publishWorld() {
+  if (!THIS_PC || pushing) return;
+  pushing = true;
+  ui.pushBtn.disabled = true;
+  showPush('GitHub に送っています…');
+  try {
+    if (!(await lastSave)) {
+      showPush('配置を保存できていないので、送りませんでした（上の赤い文字を見てください）', 'bad');
+      return;
+    }
+    const res = await fetch(PUSH_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 404) throw new Error(OLD_SERVER_TEXT);
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    if (data.status === 'pushed') showPush('✅ ' + data.message, 'ok');
+    else showPush(data.message);
+  } catch (e) {
+    showPush(e instanceof TypeError ? '中継サーバーにつながりません（server.js を起動して開き直してください）' : e.message, 'bad');
+  } finally {
+    pushing = false;
+    ui.pushBtn.disabled = false;
+  }
+}
+
+ui.pushBtn.addEventListener('click', publishWorld);
+if (!THIS_PC) {
+  ui.pushBtn.disabled = true;
+  showPush('この PC で開いた地図ツール（localhost）からだけ押せます');
+}
+
 // ---- スマホで開く（中継サーバーが動いていれば LAN の URL と QR を出す） ----
 async function showPhoneSection() {
   let info;
@@ -1004,7 +1069,7 @@ function tick() {
 // 検証スクリプト(tools/verify_map_tool.js)から触るための口
 window.fakeGpsTool = {
   map, state, settings, setSpeed, moveTo, placeDungeon, removeDungeon, goToDungeon, setPlacing, loadDungeons,
-  placeQuest, removeQuest, setQuestPlacing,
+  placeQuest, removeQuest, setQuestPlacing, publishWorld,
 };
 
 render();

@@ -1,4 +1,4 @@
-// 疑似GPS 地図ツール + 中継サーバー(server.js) + 差し替え部品(fake-gps.js) + ダンジョンの中身(dungeon.js) + クエスト(quest.js) のヘッドレス検証
+// 疑似GPS 地図ツール + 中継サーバー(server.js) + 差し替え部品(fake-gps.js) + ダンジョンの中身(dungeon.js) + クエスト(quest.js) + スマホ用に公開(push) のヘッドレス検証
 //   node tools/verify_map_tool.js            … 画面を出さずに検証
 //   node tools/verify_map_tool.js --headful  … Chrome の画面を出して検証
 // 終了コード: 0 = 全項目合格 / 1 = 不合格あり / 2 = 準備に失敗（puppeteer-core・Chrome・server.js 起動）
@@ -8,11 +8,12 @@ const fs = require('fs');
 const http = require('http');
 const os = require('os');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
 const PORT = 8793;                                   // 起動用 .vbs の 8790 とぶつけない
 const STATIC_PORT = 8794;                            // GitHub Pages のふり（中継サーバー無しでファイルを配るだけ）
+const PUSH_PORT = 8795;                              // 「スマホ用に公開」を練習用のリポジトリで試すサーバー
 const BASE = `http://127.0.0.1:${PORT}`;
 const OTHER_HOST = 'example.com';                    // 公開ホストのふり（差し替え禁止のはず）
 const LAN_HOST = 'my-pc.local';                      // 自宅 LAN のふり（差し替え可のはず）
@@ -37,18 +38,20 @@ function findChrome() {
   return candidates.find(p => fs.existsSync(p)) || null;
 }
 
-// server.js を子プロセスで起動し、/gps/info が応答するまで待つ
-function startServer() {
-  try { fs.unlinkSync(DUNGEONS_TMP); } catch (e) { /* 無ければそれでよい */ }
+// server.js を子プロセスで起動し、/gps/info が応答するまで待つ。extraEnv で保存先や git のフォルダを差し替える
+function startServer(port = PORT, extraEnv = {}) {
+  if (!extraEnv.DUNGEONS_FILE) {
+    try { fs.unlinkSync(DUNGEONS_TMP); } catch (e) { /* 無ければそれでよい */ }
+  }
   const child = spawn(process.execPath, [path.join(ROOT, 'server.js')], {
-    env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DUNGEONS_FILE: DUNGEONS_TMP },
+    env: { ...process.env, PORT: String(port), HOST: '127.0.0.1', DUNGEONS_FILE: DUNGEONS_TMP, ...extraEnv },
     stdio: ['ignore', 'ignore', 'inherit'],
   });
   return new Promise((resolve, reject) => {
     child.once('error', reject);
     const deadline = Date.now() + 8000;
     const poll = () => {
-      const req = http.get(`${BASE}/gps/info`, res => {
+      const req = http.get(`http://127.0.0.1:${port}/gps/info`, res => {
         res.resume();
         resolve(child);
       });
@@ -86,6 +89,30 @@ function startStaticServer(fixture, hits) {
     server.once('error', reject);
     server.listen(STATIC_PORT, '127.0.0.1', () => resolve(server));
   });
+}
+
+// 検証用の git（失敗したら例外）。出力は前後の空白を落として返す
+function gitIn(cwd, ...args) {
+  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, LC_ALL: 'C' } }).trim();
+}
+
+// 「スマホ用に公開」の練習場（一時フォルダ）: GitHub のふりの bare リポジトリ origin.git と、そこへ送る作業フォルダ work
+function makePushLab() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'locrpg-push-'));
+  const origin = path.join(dir, 'origin.git');
+  const work = path.join(dir, 'work');
+  gitIn(dir, 'init', '--bare', '-b', 'main', origin);
+  gitIn(dir, 'init', '-b', 'main', work);
+  gitIn(work, 'config', 'user.name', 'verify');
+  gitIn(work, 'config', 'user.email', 'verify@example.invalid');
+  gitIn(work, 'config', 'core.autocrlf', 'false');
+  fs.writeFileSync(path.join(work, 'dungeons.json'), JSON.stringify({ version: 2, dungeons: [], quests: [] }, null, 2));
+  fs.writeFileSync(path.join(work, 'other.txt'), 'はじめ\n');
+  gitIn(work, 'add', '--', 'dungeons.json', 'other.txt');
+  gitIn(work, 'commit', '-m', 'はじめの配置');
+  gitIn(work, 'remote', 'add', 'origin', origin);
+  gitIn(work, 'push', '-u', 'origin', 'main');
+  return { dir, origin, work };
 }
 
 const results = [];
@@ -151,12 +178,12 @@ function getJson(pathname) {
   });
 }
 
-function postJson(pathname, body) {
+function postJson(pathname, body, { base = BASE, headers = {} } = {}) {
   return new Promise((resolve, reject) => {
     const data = Buffer.from(JSON.stringify(body));
-    const req = http.request(BASE + pathname, {
+    const req = http.request(base + pathname, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': data.length },
+      headers: { 'Content-Type': 'application/json', 'Content-Length': data.length, ...headers },
     }, res => {
       let text = '';
       res.on('data', chunk => { text += chunk; });
@@ -882,6 +909,76 @@ async function main() {
     // ---- 18. ゲームを閉じる ----
     await game.close();
     check('地図ツール: 閉じたゲームは数えなくなる', await waitPeers(mapPage, 0), `${(await toolState(mapPage)).peers} つ`);
+
+    // ---- 19. 📤 スマホ用に公開（push）。本物の GitHub には送らず、一時フォルダの練習用リポジトリで試す ----
+    const lab = makePushLab();
+    const pushBase = `http://127.0.0.1:${PUSH_PORT}`;
+    const originCommits = () => Number(gitIn(lab.origin, 'rev-list', '--count', 'main'));
+    let pushServer = null;
+    try {
+      pushServer = await startServer(PUSH_PORT, { DUNGEONS_FILE: path.join(lab.work, 'dungeons.json'), PUBLISH_REPO: lab.work });
+      const pushPage = await browser.newPage();
+      watchErrors(pushPage, 'push');
+      await pushPage.goto(`${pushBase}/map.html`, { waitUntil: 'domcontentloaded' });
+      await pushPage.waitForFunction(() => window.fakeGpsTool, { timeout: 20000 });
+      await pushPage.evaluate(() => window.fakeGpsTool.loadDungeons());
+      // name があればダンジョンを置いた直後に（保存の終わりを待たずに）ボタンを押す。送り終わってボタンが戻るまで待ち、出た知らせを返す
+      const pressPush = async (name = '') => {
+        await pushPage.evaluate(dungeonName => {
+          if (dungeonName) {
+            document.getElementById('dgName').value = dungeonName;
+            window.fakeGpsTool.placeDungeon(35.0, 139.0);
+          }
+          document.getElementById('pushBtn').click();
+        }, name);
+        await waitFor(() => pushPage.$eval('#pushBtn', el => !el.disabled), 30000);
+        return pushPage.$eval('#pushStatus', el => ({ text: el.textContent, tone: el.className }));
+      };
+
+      const noChange = await pressPush();
+      check('スマホ用に公開: 配置が変わっていなければ何も送らず、そう知らせる',
+        /変わっていない/.test(noChange.text) && originCommits() === 1, `${noChange.text} / 送り先 ${originCommits()} 件`);
+
+      const fromLan = await postJson('/gps/push', {}, { base: pushBase, headers: { Host: `${LAN_HOST}:${PUSH_PORT}` } });
+      const fromOtherSite = await postJson('/gps/push', {}, { base: pushBase, headers: { Origin: `http://${OTHER_HOST}` } });
+      const lanPage = await browser.newPage();
+      watchErrors(lanPage, 'push-lan');
+      await lanPage.goto(`http://${LAN_HOST}:${PUSH_PORT}/map.html`, { waitUntil: 'domcontentloaded' });
+      await lanPage.waitForFunction(() => window.fakeGpsTool, { timeout: 20000 }).catch(() => {});
+      const lanButtonDisabled = await lanPage.$eval('#pushBtn', el => el.disabled).catch(() => null);
+      await lanPage.close();
+      check('スマホ用に公開: この PC で開いた地図ツールからしか送れない（同じ Wi-Fi のスマホではボタンが押せず、よそのページからの依頼も断る）',
+        fromLan.status === 403 && fromOtherSite.status === 403 && lanButtonDisabled === true && originCommits() === 1,
+        `LAN から HTTP ${fromLan.status} / よそのページから HTTP ${fromOtherSite.status} / スマホのボタン disabled=${lanButtonDisabled}`);
+
+      fs.appendFileSync(path.join(lab.work, 'other.txt'), 'まだコミットしない書きかけ\n');
+      const pushed = await pressPush('公開テストの巣穴');
+      const pushedFiles = gitIn(lab.origin, 'show', '--name-only', '--format=', 'main');
+      const pushedSubject = gitIn(lab.origin, 'log', '-1', '--format=%s', 'main');
+      const workStatus = gitIn(lab.work, 'status', '--porcelain');
+      check('スマホ用に公開: 置いた直後に押しても、その配置ごと dungeons.json だけをコミットして送り、「1〜2 分で反映」と出る',
+        pushed.tone.includes('ok') && /1〜2 分/.test(pushed.text) && originCommits() === 2
+          && gitIn(lab.origin, 'show', 'main:dungeons.json').includes('公開テストの巣穴')
+          && pushedFiles === 'dungeons.json' && /地図ツール/.test(pushedSubject)
+          && /other\.txt/.test(workStatus) && !/dungeons\.json/.test(workStatus),
+        `${pushed.text} / 送ったファイル「${pushedFiles}」/ 件名「${pushedSubject}」/ 作業フォルダ「${workStatus}」`);
+
+      // 送り先を無い場所に変えて失敗させ、戻してからもう一度押す（2 回目は配置を変えない）
+      gitIn(lab.work, 'remote', 'set-url', 'origin', path.join(lab.dir, 'nowhere.git'));
+      const failedPush = await pressPush('送れなかった日の巣穴');
+      const commitsAfterFail = originCommits();
+      gitIn(lab.work, 'remote', 'set-url', 'origin', lab.origin);
+      const retried = await pressPush();
+      check('スマホ用に公開: 送れなかったときは理由を出してコミットを PC に残し、次に押すと残りを送る',
+        failedPush.tone.includes('bad') && /送れませんでした/.test(failedPush.text) && commitsAfterFail === 2
+          && retried.tone.includes('ok') && originCommits() === 3
+          && gitIn(lab.origin, 'show', 'main:dungeons.json').includes('送れなかった日の巣穴'),
+        `失敗「${failedPush.text}」/ もう一度「${retried.text}」/ 送り先 ${originCommits()} 件`);
+      await pushPage.close();
+    } finally {
+      if (pushServer) pushServer.kill();
+      try { fs.rmSync(lab.dir, { recursive: true, force: true }); } catch (e) { /* 消せなくても結果は変わらない */ }
+    }
 
     check('ページ上のエラーが無い', pageErrors.length === 0, pageErrors.join(' | '));
   } finally {
