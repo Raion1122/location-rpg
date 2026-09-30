@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "updatedAt": "2026-09-14T23:16:12.063Z",
+  "updatedAt": "2026-09-14T23:23:13.246Z",
   "dungeons": [
     {
       "id": "d-615azt6pu",
@@ -31,6 +31,16 @@
       "radius": 40,
       "questId": "q-xbwpeddlo",
       "createdAt": "2026-09-14T23:16:12.060Z"
+    },
+    {
+      "id": "d-40kc34el8",
+      "name": "ゴブリンの巣穴",
+      "kind": "goblin",
+      "lat": 35.68420007119258,
+      "lng": 139.65496838092804,
+      "radius": 40,
+      "questId": "q-xog4k8el8",
+      "createdAt": "2026-09-14T23:23:13.244Z"
     }
   ],
   "quests": [
@@ -63,6 +73,16 @@
       "radius": 30,
       "dungeonId": "d-eq1f30dlo",
       "createdAt": "2026-09-14T23:16:12.060Z"
+    },
+    {
+      "id": "q-xog4k8el8",
+      "name": "村の男",
+      "look": "man",
+      "lat": 35.68460747008943,
+      "lng": 139.65372920036316,
+      "radius": 30,
+      "dungeonId": "d-40kc34el8",
+      "createdAt": "2026-09-14T23:23:13.244Z"
     }
   ]
 }
